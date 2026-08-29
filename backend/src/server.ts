@@ -11,12 +11,9 @@ const PORT = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(express.json());
-app.use(errorHandler);
-
-app.use(cors());
-app.use(express.json());
 
 app.use("/api", healthRouter);
+
 app.use(errorHandler);
 
 app.listen(PORT, () => {
