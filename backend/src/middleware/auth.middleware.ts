@@ -8,12 +8,10 @@ if (!JWT_SECRET) {
 }
 
 export interface AuthUser {
-  id: string;
-  name: string;
+  userId: string;
   email: string;
   role: string;
 }
-
 export interface AuthRequest extends Request {
   user?: AuthUser;
 }

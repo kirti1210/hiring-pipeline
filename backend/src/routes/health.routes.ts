@@ -3,6 +3,11 @@ import { healthCheck } from "../controllers/health.controller";
 
 const router = Router();
 
-router.get("/health", healthCheck);
+/**
+ * GET /api/health
+ *
+ * Health check endpoint.
+ */
+router.get("/", healthCheck);
 
 export default router;

@@ -2,14 +2,14 @@ import { Request, Response, NextFunction } from "express";
 
 export const errorHandler = (
   err: Error,
-  _req: Request,
+  req: Request,
   res: Response,
-  _next: NextFunction
-) => {
-  console.error(err);
+  next: NextFunction
+): void => {
+  console.error("❌ Error:", err);
 
   res.status(500).json({
     status: "error",
-    message: "Internal server error",
+    message: err.message || "Internal server error",
   });
 };
