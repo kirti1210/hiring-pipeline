@@ -5,7 +5,8 @@ export const validateRequest = (
   res: Response,
   next: NextFunction
 ) => {
-  if (req.body === undefined || req.body === null) {
+  // Request body must exist
+  if (!req.body || typeof req.body !== "object") {
     return res.status(400).json({
       status: "error",
       message: "Request body is required",
@@ -14,40 +15,48 @@ export const validateRequest = (
 
   const { email, password } = req.body;
 
-  // Validate email
-  if (email !== undefined) {
-    if (typeof email !== "string" || !email.trim()) {
-      return res.status(400).json({
-        status: "error",
-        message: "Email is required",
-      });
-    }
-
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-    if (!emailRegex.test(email.trim())) {
-      return res.status(400).json({
-        status: "error",
-        message: "Invalid email format",
-      });
-    }
+  // Email is required
+  if (
+    email === undefined ||
+    email === null ||
+    typeof email !== "string" ||
+    email.trim().length === 0
+  ) {
+    return res.status(400).json({
+      status: "error",
+      message: "Email is required",
+    });
   }
 
-  // Validate password
-  if (password !== undefined) {
-    if (typeof password !== "string" || !password) {
-      return res.status(400).json({
-        status: "400",
-        message: "Password is required",
-      });
-    }
+  // Validate email format
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-    if (password.length < 8) {
-      return res.status(400).json({
-        status: "error",
-        message: "Password must be at least 8 characters long",
-      });
-    }
+  if (!emailRegex.test(email.trim())) {
+    return res.status(400).json({
+      status: "error",
+      message: "Invalid email format",
+    });
+  }
+
+  // Password is required
+  if (
+    password === undefined ||
+    password === null ||
+    typeof password !== "string" ||
+    password.length === 0
+  ) {
+    return res.status(400).json({
+      status: "error",
+      message: "Password is required",
+    });
+  }
+
+  // Password must be at least 8 characters
+  if (password.length < 8) {
+    return res.status(400).json({
+      status: "error",
+      message: "Password must be at least 8 characters long",
+    });
   }
 
   next();
