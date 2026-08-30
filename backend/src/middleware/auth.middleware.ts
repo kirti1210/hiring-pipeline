@@ -7,16 +7,22 @@ if (!JWT_SECRET) {
   throw new Error("JWT_SECRET is not defined");
 }
 
-export interface AuthRequest extends Request {
-  user?: {
-    id: string;
-    name: string;
-    email: string;
-    role: string;
-  };
+export interface AuthUser {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
 }
 
-export const authenticate = (
+export interface AuthRequest extends Request {
+  user?: AuthUser;
+}
+
+/**
+ * Verifies the JWT and attaches the authenticated
+ * user to req.user.
+ */
+export const requireAuth = (
   req: AuthRequest,
   res: Response,
   next: NextFunction
@@ -31,9 +37,14 @@ export const authenticate = (
       });
     }
 
-    const token = authHeader.startsWith("Bearer ")
-      ? authHeader.substring(7)
-      : null;
+    if (!authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({
+        status: "error",
+        message: "Bearer token is required",
+      });
+    }
+
+    const token = authHeader.substring(7).trim();
 
     if (!token) {
       return res.status(401).json({
@@ -42,12 +53,7 @@ export const authenticate = (
       });
     }
 
-    const decoded = jwt.verify(token, JWT_SECRET) as {
-      id: string;
-      name: string;
-      email: string;
-      role: string;
-    };
+    const decoded = jwt.verify(token, JWT_SECRET) as AuthUser;
 
     req.user = decoded;
 
@@ -59,3 +65,39 @@ export const authenticate = (
     });
   }
 };
+
+/**
+ * Checks whether the authenticated user has
+ * one of the required roles.
+ */
+export const requireRole = (...allowedRoles: string[]) => {
+  return (
+    req: AuthRequest,
+    res: Response,
+    next: NextFunction
+  ) => {
+    if (!req.user) {
+      return res.status(401).json({
+        status: "error",
+        message: "Authentication required",
+      });
+    }
+
+    if (!allowedRoles.includes(req.user.role)) {
+      return res.status(403).json({
+        status: "error",
+        message: "Forbidden: insufficient permissions",
+      });
+    }
+
+    next();
+  };
+};
+
+/**
+ * Backward-compatible alias for the Phase 5 middleware.
+ *
+ * Existing routes using `authenticate` will continue
+ * to work while new Phase 6 routes can use `requireAuth`.
+ */
+export const authenticate = requireAuth;
