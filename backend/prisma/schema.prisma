@@ -79,6 +79,9 @@ model Application {
   jobId       String           @db.Uuid
   candidateId String           @db.Uuid
   stage       ApplicationStage @default(APPLIED)
+
+  rejectedFromStage ApplicationStage?
+
   source      String?
   notes       String?
   appliedAt   DateTime         @default(now())
