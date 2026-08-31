@@ -250,6 +250,17 @@ router.get(
  * RECRUITER ONLY
  *
  * Create an application.
+ *
+ * Body:
+ *
+ * {
+ *   "jobId": "...",
+ *   "candidateId": "...",
+ *   "source": "LinkedIn",
+ *   "notes": "Strong backend experience"
+ * }
+ *
+ * New applications always start at APPLIED.
  * ============================================================
  */
 
@@ -266,10 +277,15 @@ router.post(
         });
       }
 
-      const { jobId, candidateId } = req.body;
+      const {
+        jobId,
+        candidateId,
+        source,
+        notes,
+      } = req.body;
 
       /**
-       * Validate jobId
+       * Validate jobId.
        */
 
       if (
@@ -283,7 +299,7 @@ router.post(
       }
 
       /**
-       * Validate candidateId
+       * Validate candidateId.
        */
 
       if (
@@ -296,11 +312,53 @@ router.post(
         });
       }
 
+      /**
+       * Validate source.
+       */
+
+      if (
+        source !== undefined &&
+        source !== null &&
+        typeof source !== "string"
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message: "source must be a string",
+        });
+      }
+
+      /**
+       * Validate notes.
+       */
+
+      if (
+        notes !== undefined &&
+        notes !== null &&
+        typeof notes !== "string"
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message: "notes must be a string",
+        });
+      }
+
       const cleanJobId = jobId.trim();
       const cleanCandidateId = candidateId.trim();
 
+      const cleanSource =
+        typeof source === "string" &&
+        source.trim().length > 0
+          ? source.trim()
+          : null;
+
+      const cleanNotes =
+        typeof notes === "string" &&
+        notes.trim().length > 0
+          ? notes.trim()
+          : null;
+
       /**
-       * Check job
+       * Check job.
        */
 
       const job = await prisma.job.findUnique({
@@ -317,7 +375,19 @@ router.post(
       }
 
       /**
-       * Check candidate
+       * Archived jobs cannot receive new applications.
+       */
+
+      if (job.isArchived) {
+        return res.status(400).json({
+          status: "error",
+          message:
+            "Cannot create an application for an archived job",
+        });
+      }
+
+      /**
+       * Check candidate.
        */
 
       const candidate =
@@ -335,7 +405,7 @@ router.post(
       }
 
       /**
-       * Candidate role validation
+       * Candidate role validation.
        */
 
       if (candidate.role !== "CANDIDATE") {
@@ -347,7 +417,7 @@ router.post(
       }
 
       /**
-       * Prevent duplicate application
+       * Prevent duplicate application.
        */
 
       const existingApplication =
@@ -372,7 +442,7 @@ router.post(
       }
 
       /**
-       * Create application
+       * Create application.
        */
 
       const application =
@@ -380,23 +450,15 @@ router.post(
           data: {
             jobId: cleanJobId,
             candidateId: cleanCandidateId,
+            source: cleanSource,
+            notes: cleanNotes,
             stage: ApplicationStage.APPLIED,
           },
-          include: {
-            job: true,
-            candidate: {
-              select: {
-                id: true,
-                name: true,
-                email: true,
-                role: true,
-              },
-            },
-          },
+          include: applicationInclude,
         });
 
       /**
-       * Audit event
+       * Audit event.
        */
 
       await createApplicationEvent({
@@ -481,14 +543,16 @@ router.get(
       }
 
       /**
-       * INTERVIEWER ACCESS CONTROL
+       * INTERVIEWER:
+       * Must be assigned.
        */
 
       if (req.user.role === "INTERVIEWER") {
-        const assigned = await isInterviewerAssigned(
-          id,
-          req.user.userId
-        );
+        const assigned =
+          await isInterviewerAssigned(
+            id,
+            req.user.userId
+          );
 
         if (!assigned) {
           return res.status(403).json({
@@ -500,7 +564,7 @@ router.get(
       }
 
       /**
-       * Only recruiter/interviewer
+       * Only recruiter/interviewer.
        */
 
       if (
@@ -509,7 +573,8 @@ router.get(
       ) {
         return res.status(403).json({
           status: "error",
-          message: "Forbidden: insufficient permissions",
+          message:
+            "Forbidden: insufficient permissions",
         });
       }
 
@@ -529,6 +594,300 @@ router.get(
       return res.status(500).json({
         status: "error",
         message: "Failed to fetch application",
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error),
+      });
+    }
+  }
+);
+
+/**
+ * ============================================================
+ * PUT /api/applications/:id
+ * ============================================================
+ *
+ * RECRUITER ONLY
+ *
+ * Edit application.
+ *
+ * Editable:
+ *   jobId
+ *   candidateId
+ *   source
+ *   notes
+ *
+ * Stage is intentionally NOT changed here.
+ * Use PATCH /:id/stage for stage changes.
+ * ============================================================
+ */
+
+router.put(
+  "/:id",
+  requireAuth,
+  requireRole("RECRUITER"),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({
+          status: "error",
+          message: "Authentication required",
+        });
+      }
+
+      const id = getParam(req.params.id);
+
+      if (!id) {
+        return res.status(400).json({
+          status: "error",
+          message: "Application ID is required",
+        });
+      }
+
+      const existingApplication =
+        await prisma.application.findUnique({
+          where: {
+            id,
+          },
+        });
+
+      if (!existingApplication) {
+        return res.status(404).json({
+          status: "error",
+          message: "Application not found",
+        });
+      }
+
+      const {
+        jobId,
+        candidateId,
+        source,
+        notes,
+      } = req.body;
+
+      /**
+       * Validate fields when provided.
+       */
+
+      if (
+        jobId !== undefined &&
+        (typeof jobId !== "string" ||
+          jobId.trim().length === 0)
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message: "jobId must be a non-empty string",
+        });
+      }
+
+      if (
+        candidateId !== undefined &&
+        (typeof candidateId !== "string" ||
+          candidateId.trim().length === 0)
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message:
+            "candidateId must be a non-empty string",
+        });
+      }
+
+      if (
+        source !== undefined &&
+        source !== null &&
+        typeof source !== "string"
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message: "source must be a string",
+        });
+      }
+
+      if (
+        notes !== undefined &&
+        notes !== null &&
+        typeof notes !== "string"
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message: "notes must be a string",
+        });
+      }
+
+      const cleanJobId =
+        typeof jobId === "string"
+          ? jobId.trim()
+          : existingApplication.jobId;
+
+      const cleanCandidateId =
+        typeof candidateId === "string"
+          ? candidateId.trim()
+          : existingApplication.candidateId;
+
+      /**
+       * If job is changing, validate it.
+       */
+
+      if (cleanJobId !== existingApplication.jobId) {
+        const job = await prisma.job.findUnique({
+          where: {
+            id: cleanJobId,
+          },
+        });
+
+        if (!job) {
+          return res.status(404).json({
+            status: "error",
+            message: "Job not found",
+          });
+        }
+
+        if (job.isArchived) {
+          return res.status(400).json({
+            status: "error",
+            message:
+              "Cannot move an application to an archived job",
+          });
+        }
+      }
+
+      /**
+       * Validate candidate if changing.
+       */
+
+      if (
+        cleanCandidateId !==
+        existingApplication.candidateId
+      ) {
+        const candidate =
+          await prisma.user.findUnique({
+            where: {
+              id: cleanCandidateId,
+            },
+          });
+
+        if (!candidate) {
+          return res.status(404).json({
+            status: "error",
+            message: "Candidate not found",
+          });
+        }
+
+        if (candidate.role !== "CANDIDATE") {
+          return res.status(400).json({
+            status: "error",
+            message:
+              "The specified user is not a candidate",
+          });
+        }
+      }
+
+      /**
+       * Check duplicate application if job/candidate
+       * combination changes.
+       */
+
+      if (
+        cleanJobId !== existingApplication.jobId ||
+        cleanCandidateId !==
+          existingApplication.candidateId
+      ) {
+        const duplicate =
+          await prisma.application.findUnique({
+            where: {
+              jobId_candidateId: {
+                jobId: cleanJobId,
+                candidateId: cleanCandidateId,
+              },
+            },
+          });
+
+        if (
+          duplicate &&
+          duplicate.id !== existingApplication.id
+        ) {
+          return res.status(409).json({
+            status: "error",
+            message:
+              "Candidate has already applied to this job",
+            data: {
+              application: duplicate,
+            },
+          });
+        }
+      }
+
+      /**
+       * Prepare optional values.
+       */
+
+      const cleanSource =
+        source === undefined
+          ? existingApplication.source
+          : typeof source === "string" &&
+              source.trim().length > 0
+            ? source.trim()
+            : null;
+
+      const cleanNotes =
+        notes === undefined
+          ? existingApplication.notes
+          : typeof notes === "string" &&
+              notes.trim().length > 0
+            ? notes.trim()
+            : null;
+
+      /**
+       * Update application.
+       */
+
+      const application =
+        await prisma.application.update({
+          where: {
+            id,
+          },
+          data: {
+            jobId: cleanJobId,
+            candidateId: cleanCandidateId,
+            source: cleanSource,
+            notes: cleanNotes,
+          },
+          include: applicationInclude,
+        });
+
+      /**
+       * Add audit event when notes changed.
+       */
+
+      if (
+        notes !== undefined &&
+        notes !== existingApplication.notes
+      ) {
+        await createApplicationEvent({
+          applicationId: id,
+          actorId: req.user.userId,
+          type: ApplicationEventType.NOTE_ADDED,
+          description: "Application notes updated",
+        });
+      }
+
+      return res.status(200).json({
+        status: "success",
+        message: "Application updated successfully",
+        data: {
+          application,
+        },
+      });
+    } catch (error) {
+      console.error(
+        "PUT /api/applications/:id error:",
+        error
+      );
+
+      return res.status(500).json({
+        status: "error",
+        message: "Failed to update application",
         error:
           error instanceof Error
             ? error.message
@@ -695,10 +1054,6 @@ router.patch(
         });
       }
 
-      /**
-       * REJECTED must exist in ApplicationStage.
-       */
-
       const rejectedStage =
         Object.values(ApplicationStage).find(
           (value) => value === "REJECTED"
@@ -721,11 +1076,6 @@ router.patch(
             stage: rejectedStage,
           },
         });
-
-      /**
-       * There is no CANDIDATE_REJECTED event in the
-       * schema. Therefore use STAGE_CHANGED.
-       */
 
       await createApplicationEvent({
         applicationId: id,
@@ -818,11 +1168,6 @@ router.patch(
           },
         });
 
-      /**
-       * There is no CANDIDATE_REINSTATED event.
-       * Use STAGE_CHANGED.
-       */
-
       await createApplicationEvent({
         applicationId: id,
         actorId: req.user.userId,
@@ -907,10 +1252,6 @@ router.post(
       const cleanInterviewerId =
         interviewerId.trim();
 
-      /**
-       * Check application.
-       */
-
       const application =
         await prisma.application.findUnique({
           where: {
@@ -924,10 +1265,6 @@ router.post(
           message: "Application not found",
         });
       }
-
-      /**
-       * Check interviewer.
-       */
 
       const interviewer =
         await prisma.user.findUnique({
@@ -951,10 +1288,6 @@ router.post(
         });
       }
 
-      /**
-       * Check duplicate assignment.
-       */
-
       const existingAssignment =
         await prisma.applicationInterviewer.findUnique({
           where: {
@@ -976,10 +1309,6 @@ router.post(
         });
       }
 
-      /**
-       * Create assignment.
-       */
-
       const assignment =
         await prisma.applicationInterviewer.create({
           data: {
@@ -997,13 +1326,6 @@ router.post(
             },
           },
         });
-
-      /**
-       * Your schema does NOT have INTERVIEWER_ASSIGNED.
-       *
-       * INTERVIEW_SCHEDULED is the closest available
-       * interview-related audit event.
-       */
 
       await createApplicationEvent({
         applicationId,
@@ -1085,10 +1407,6 @@ router.delete(
         });
       }
 
-      /**
-       * Find assignment.
-       */
-
       const assignment =
         await prisma.applicationInterviewer.findUnique({
           where: {
@@ -1117,10 +1435,6 @@ router.delete(
         });
       }
 
-      /**
-       * Delete assignment.
-       */
-
       await prisma.applicationInterviewer.delete({
         where: {
           applicationId_interviewerId: {
@@ -1129,13 +1443,6 @@ router.delete(
           },
         },
       });
-
-      /**
-       * No INTERVIEWER_REMOVED event exists.
-       *
-       * Use NOTE_ADDED as an audit event for the
-       * assignment removal.
-       */
 
       await createApplicationEvent({
         applicationId,
@@ -1180,13 +1487,6 @@ router.delete(
  * INTERVIEWER ONLY
  *
  * The interviewer must be assigned to the application.
- *
- * Body:
- *
- * {
- *   "rating": 5,
- *   "comments": "Strong technical skills..."
- * }
  * ============================================================
  */
 
@@ -1215,10 +1515,6 @@ router.post(
         });
       }
 
-      /**
-       * Validate rating.
-       */
-
       if (
         typeof rating !== "number" ||
         !Number.isInteger(rating) ||
@@ -1232,10 +1528,6 @@ router.post(
         });
       }
 
-      /**
-       * Validate comments.
-       */
-
       if (
         typeof comments !== "string" ||
         comments.trim().length === 0
@@ -1245,10 +1537,6 @@ router.post(
           message: "comments are required",
         });
       }
-
-      /**
-       * Check application.
-       */
 
       const application =
         await prisma.application.findUnique({
@@ -1264,13 +1552,6 @@ router.post(
         });
       }
 
-      /**
-       * CRITICAL AUTHORIZATION CHECK
-       *
-       * Interviewer can submit feedback only if
-       * assigned to this application.
-       */
-
       const assigned =
         await isInterviewerAssigned(
           applicationId,
@@ -1284,15 +1565,6 @@ router.post(
             "Forbidden: application is not assigned to you",
         });
       }
-
-      /**
-       * Because schema has:
-       *
-       * @@unique([applicationId, interviewerId])
-       *
-       * each interviewer can submit only one feedback
-       * record per application.
-       */
 
       const existingFeedback =
         await prisma.feedback.findUnique({
@@ -1315,10 +1587,6 @@ router.post(
         });
       }
 
-      /**
-       * Create feedback.
-       */
-
       const feedback =
         await prisma.feedback.create({
           data: {
@@ -1338,12 +1606,6 @@ router.post(
             },
           },
         });
-
-      /**
-       * Correct event enum from schema:
-       *
-       * FEEDBACK_SUBMITTED
-       */
 
       await createApplicationEvent({
         applicationId,
@@ -1417,10 +1679,6 @@ router.get(
         });
       }
 
-      /**
-       * Check application.
-       */
-
       const application =
         await prisma.application.findUnique({
           where: {
@@ -1434,11 +1692,6 @@ router.get(
           message: "Application not found",
         });
       }
-
-      /**
-       * INTERVIEWER:
-       * Must be assigned.
-       */
 
       if (req.user.role === "INTERVIEWER") {
         const assigned =
@@ -1455,10 +1708,6 @@ router.get(
           });
         }
       }
-
-      /**
-       * Only recruiter/interviewer.
-       */
 
       if (
         req.user.role !== "RECRUITER" &&
@@ -1517,11 +1766,5 @@ router.get(
     }
   }
 );
-
-/**
- * ============================================================
- * EXPORT ROUTER
- * ============================================================
- */
 
 export default router;

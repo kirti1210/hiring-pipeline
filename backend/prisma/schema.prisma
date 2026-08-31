@@ -40,13 +40,13 @@ enum ApplicationEventType {
 }
 
 model User {
-  id                   String                   @id @default(uuid()) @db.Uuid
-  name                 String
-  email                String                   @unique
-  passwordHash         String
-  role                 UserRole
-  createdAt            DateTime                 @default(now())
-  updatedAt            DateTime                 @updatedAt
+  id           String   @id @default(uuid()) @db.Uuid
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         UserRole
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   createdJobs          Job[]                    @relation("JobCreator")
   applications         Application[]            @relation("CandidateApplications")
@@ -57,14 +57,14 @@ model User {
 }
 
 model Job {
-  id           String        @id @default(uuid()) @db.Uuid
-  title        String
-  description  String?
-  status       JobStatus     @default(DRAFT)
-  createdById  String        @db.Uuid
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-  isArchived   Boolean       @default(false)
+  id          String    @id @default(uuid()) @db.Uuid
+  title       String
+  description String?
+  status      JobStatus @default(DRAFT)
+  createdById String    @db.Uuid
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  isArchived  Boolean   @default(false)
 
   createdBy    User          @relation("JobCreator", fields: [createdById], references: [id])
   applications Application[]
@@ -75,19 +75,21 @@ model Job {
 }
 
 model Application {
-  id                   String                   @id @default(uuid()) @db.Uuid
-  jobId                String                   @db.Uuid
-  candidateId          String                   @db.Uuid
-  stage                ApplicationStage        @default(APPLIED)
-  appliedAt            DateTime                 @default(now())
-  createdAt            DateTime                 @default(now())
-  updatedAt            DateTime                 @updatedAt
+  id          String           @id @default(uuid()) @db.Uuid
+  jobId       String           @db.Uuid
+  candidateId String           @db.Uuid
+  stage       ApplicationStage @default(APPLIED)
+  source      String?
+  notes       String?
+  appliedAt   DateTime         @default(now())
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
 
-  job                  Job                      @relation(fields: [jobId], references: [id])
-  candidate            User                     @relation("CandidateApplications", fields: [candidateId], references: [id])
-  interviewers         ApplicationInterviewer[]
-  events               ApplicationEvent[]
-  feedback             Feedback[]
+  job          Job                      @relation(fields: [jobId], references: [id])
+  candidate    User                     @relation("CandidateApplications", fields: [candidateId], references: [id])
+  interviewers ApplicationInterviewer[]
+  events       ApplicationEvent[]
+  feedback     Feedback[]
 
   @@unique([jobId, candidateId])
   @@index([jobId])
@@ -96,27 +98,27 @@ model Application {
 }
 
 model ApplicationInterviewer {
-  applicationId String      @db.Uuid
-  interviewerId String      @db.Uuid
-  assignedAt    DateTime    @default(now())
+  applicationId String   @db.Uuid
+  interviewerId String   @db.Uuid
+  assignedAt    DateTime @default(now())
 
-  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
-  interviewer   User        @relation(fields: [interviewerId], references: [id])
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  interviewer User        @relation(fields: [interviewerId], references: [id])
 
   @@id([applicationId, interviewerId])
   @@index([interviewerId])
 }
 
 model ApplicationEvent {
-  id            String                @id @default(uuid()) @db.Uuid
-  applicationId String                @db.Uuid
-  actorId       String?               @db.Uuid
+  id            String               @id @default(uuid()) @db.Uuid
+  applicationId String               @db.Uuid
+  actorId       String?              @db.Uuid
   type          ApplicationEventType
   description   String?
-  createdAt     DateTime              @default(now())
+  createdAt     DateTime             @default(now())
 
-  application   Application           @relation(fields: [applicationId], references: [id], onDelete: Cascade)
-  actor         User?                 @relation("EventActor", fields: [actorId], references: [id])
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  actor       User?       @relation("EventActor", fields: [actorId], references: [id])
 
   @@index([applicationId])
   @@index([actorId])
@@ -124,16 +126,16 @@ model ApplicationEvent {
 }
 
 model Feedback {
-  id            String      @id @default(uuid()) @db.Uuid
-  applicationId String      @db.Uuid
-  interviewerId String      @db.Uuid
+  id            String   @id @default(uuid()) @db.Uuid
+  applicationId String   @db.Uuid
+  interviewerId String   @db.Uuid
   rating        Int
   comments      String
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
-  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
-  interviewer   User        @relation(fields: [interviewerId], references: [id])
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  interviewer User        @relation(fields: [interviewerId], references: [id])
 
   @@unique([applicationId, interviewerId])
   @@index([applicationId])
@@ -141,13 +143,10 @@ model Feedback {
 }
 
 model AlertDismissal {
-  id          String   @id @default(uuid()) @db.Uuid
-  userId      String   @db.Uuid
-  alertKey    String
-  dismissedAt DateTime @default(now())
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
 
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@unique([userId, alertKey])
   @@index([userId])
 }
