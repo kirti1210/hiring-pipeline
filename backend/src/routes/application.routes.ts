@@ -33,6 +33,68 @@ const getParam = (
 
 /**
  * ============================================================
+ * APPLICATION STAGE TRANSITION RULES
+ * ============================================================
+ *
+ * Normal pipeline:
+ *
+ * APPLIED
+ *   ↓
+ * SCREENING
+ *   ↓
+ * INTERVIEW
+ *   ↓
+ * OFFER
+ *   ↓
+ * HIRED
+ *
+ * Invalid:
+ *
+ * APPLIED    → INTERVIEW
+ * APPLIED    → OFFER
+ * SCREENING  → OFFER
+ * INTERVIEW  → HIRED
+ *
+ * REJECTED is treated separately.
+ * ============================================================
+ */
+
+const STAGE_TRANSITIONS: Record<
+  string,
+  string[]
+> = {
+  APPLIED: ["SCREENING"],
+  SCREENING: ["INTERVIEW"],
+  INTERVIEW: ["OFFER"],
+  OFFER: ["HIRED"],
+};
+
+/**
+ * Check whether a pipeline stage transition is valid.
+ */
+const isValidStageTransition = (
+  currentStage: ApplicationStage,
+  nextStage: ApplicationStage
+): boolean => {
+  /**
+   * Same-stage update is not considered a transition.
+   */
+  if (currentStage === nextStage) {
+    return false;
+  }
+
+  const allowedNextStages =
+    STAGE_TRANSITIONS[currentStage];
+
+  if (!allowedNextStages) {
+    return false;
+  }
+
+  return allowedNextStages.includes(nextStage);
+};
+
+/**
+ * ============================================================
  * COMMON APPLICATION INCLUDE
  * ============================================================
  */
@@ -165,12 +227,6 @@ router.get(
 
       let applications;
 
-      /**
-       * --------------------------------------------------------
-       * RECRUITER
-       * --------------------------------------------------------
-       */
-
       if (req.user.role === "RECRUITER") {
         applications =
           await prisma.application.findMany({
@@ -179,15 +235,7 @@ router.get(
             },
             include: applicationInclude,
           });
-      }
-
-      /**
-       * --------------------------------------------------------
-       * INTERVIEWER
-       * --------------------------------------------------------
-       */
-
-      else if (req.user.role === "INTERVIEWER") {
+      } else if (req.user.role === "INTERVIEWER") {
         applications =
           await prisma.application.findMany({
             where: {
@@ -202,15 +250,7 @@ router.get(
             },
             include: applicationInclude,
           });
-      }
-
-      /**
-       * --------------------------------------------------------
-       * OTHER ROLES
-       * --------------------------------------------------------
-       */
-
-      else {
+      } else {
         return res.status(403).json({
           status: "error",
           message: "Forbidden: insufficient permissions",
@@ -249,16 +289,7 @@ router.get(
  *
  * RECRUITER ONLY
  *
- * Create an application.
- *
- * Body:
- *
- * {
- *   "jobId": "...",
- *   "candidateId": "...",
- *   "source": "LinkedIn",
- *   "notes": "Strong backend experience"
- * }
+ * Create application.
  *
  * New applications always start at APPLIED.
  * ============================================================
@@ -284,10 +315,6 @@ router.post(
         notes,
       } = req.body;
 
-      /**
-       * Validate jobId.
-       */
-
       if (
         typeof jobId !== "string" ||
         jobId.trim().length === 0
@@ -297,10 +324,6 @@ router.post(
           message: "jobId is required",
         });
       }
-
-      /**
-       * Validate candidateId.
-       */
 
       if (
         typeof candidateId !== "string" ||
@@ -312,10 +335,6 @@ router.post(
         });
       }
 
-      /**
-       * Validate source.
-       */
-
       if (
         source !== undefined &&
         source !== null &&
@@ -326,10 +345,6 @@ router.post(
           message: "source must be a string",
         });
       }
-
-      /**
-       * Validate notes.
-       */
 
       if (
         notes !== undefined &&
@@ -343,7 +358,8 @@ router.post(
       }
 
       const cleanJobId = jobId.trim();
-      const cleanCandidateId = candidateId.trim();
+      const cleanCandidateId =
+        candidateId.trim();
 
       const cleanSource =
         typeof source === "string" &&
@@ -356,10 +372,6 @@ router.post(
         notes.trim().length > 0
           ? notes.trim()
           : null;
-
-      /**
-       * Check job.
-       */
 
       const job = await prisma.job.findUnique({
         where: {
@@ -374,10 +386,6 @@ router.post(
         });
       }
 
-      /**
-       * Archived jobs cannot receive new applications.
-       */
-
       if (job.isArchived) {
         return res.status(400).json({
           status: "error",
@@ -385,10 +393,6 @@ router.post(
             "Cannot create an application for an archived job",
         });
       }
-
-      /**
-       * Check candidate.
-       */
 
       const candidate =
         await prisma.user.findUnique({
@@ -404,10 +408,6 @@ router.post(
         });
       }
 
-      /**
-       * Candidate role validation.
-       */
-
       if (candidate.role !== "CANDIDATE") {
         return res.status(400).json({
           status: "error",
@@ -415,10 +415,6 @@ router.post(
             "The specified user is not a candidate",
         });
       }
-
-      /**
-       * Prevent duplicate application.
-       */
 
       const existingApplication =
         await prisma.application.findUnique({
@@ -441,10 +437,6 @@ router.post(
         });
       }
 
-      /**
-       * Create application.
-       */
-
       const application =
         await prisma.application.create({
           data: {
@@ -457,14 +449,11 @@ router.post(
           include: applicationInclude,
         });
 
-      /**
-       * Audit event.
-       */
-
       await createApplicationEvent({
         applicationId: application.id,
         actorId: req.user.userId,
-        type: ApplicationEventType.APPLICATION_CREATED,
+        type:
+          ApplicationEventType.APPLICATION_CREATED,
         description: "Application created",
       });
 
@@ -496,13 +485,6 @@ router.post(
 /**
  * ============================================================
  * GET /api/applications/:id
- * ============================================================
- *
- * RECRUITER:
- *   Can view any application.
- *
- * INTERVIEWER:
- *   Can view only assigned applications.
  * ============================================================
  */
 
@@ -542,11 +524,6 @@ router.get(
         });
       }
 
-      /**
-       * INTERVIEWER:
-       * Must be assigned.
-       */
-
       if (req.user.role === "INTERVIEWER") {
         const assigned =
           await isInterviewerAssigned(
@@ -562,10 +539,6 @@ router.get(
           });
         }
       }
-
-      /**
-       * Only recruiter/interviewer.
-       */
 
       if (
         req.user.role !== "RECRUITER" &&
@@ -610,16 +583,13 @@ router.get(
  *
  * RECRUITER ONLY
  *
- * Edit application.
- *
  * Editable:
  *   jobId
  *   candidateId
  *   source
  *   notes
  *
- * Stage is intentionally NOT changed here.
- * Use PATCH /:id/stage for stage changes.
+ * Stage cannot be changed here.
  * ============================================================
  */
 
@@ -666,10 +636,6 @@ router.put(
         notes,
       } = req.body;
 
-      /**
-       * Validate fields when provided.
-       */
-
       if (
         jobId !== undefined &&
         (typeof jobId !== "string" ||
@@ -677,7 +643,8 @@ router.put(
       ) {
         return res.status(400).json({
           status: "error",
-          message: "jobId must be a non-empty string",
+          message:
+            "jobId must be a non-empty string",
         });
       }
 
@@ -725,11 +692,10 @@ router.put(
           ? candidateId.trim()
           : existingApplication.candidateId;
 
-      /**
-       * If job is changing, validate it.
-       */
-
-      if (cleanJobId !== existingApplication.jobId) {
+      if (
+        cleanJobId !==
+        existingApplication.jobId
+      ) {
         const job = await prisma.job.findUnique({
           where: {
             id: cleanJobId,
@@ -751,10 +717,6 @@ router.put(
           });
         }
       }
-
-      /**
-       * Validate candidate if changing.
-       */
 
       if (
         cleanCandidateId !==
@@ -783,13 +745,9 @@ router.put(
         }
       }
 
-      /**
-       * Check duplicate application if job/candidate
-       * combination changes.
-       */
-
       if (
-        cleanJobId !== existingApplication.jobId ||
+        cleanJobId !==
+          existingApplication.jobId ||
         cleanCandidateId !==
           existingApplication.candidateId
       ) {
@@ -818,10 +776,6 @@ router.put(
         }
       }
 
-      /**
-       * Prepare optional values.
-       */
-
       const cleanSource =
         source === undefined
           ? existingApplication.source
@@ -838,10 +792,6 @@ router.put(
             ? notes.trim()
             : null;
 
-      /**
-       * Update application.
-       */
-
       const application =
         await prisma.application.update({
           where: {
@@ -856,10 +806,6 @@ router.put(
           include: applicationInclude,
         });
 
-      /**
-       * Add audit event when notes changed.
-       */
-
       if (
         notes !== undefined &&
         notes !== existingApplication.notes
@@ -868,13 +814,15 @@ router.put(
           applicationId: id,
           actorId: req.user.userId,
           type: ApplicationEventType.NOTE_ADDED,
-          description: "Application notes updated",
+          description:
+            "Application notes updated",
         });
       }
 
       return res.status(200).json({
         status: "success",
-        message: "Application updated successfully",
+        message:
+          "Application updated successfully",
         data: {
           application,
         },
@@ -887,7 +835,8 @@ router.put(
 
       return res.status(500).json({
         status: "error",
-        message: "Failed to update application",
+        message:
+          "Failed to update application",
         error:
           error instanceof Error
             ? error.message
@@ -904,7 +853,28 @@ router.put(
  *
  * RECRUITER ONLY
  *
- * Interviewers cannot change stages.
+ * PHASE 9 PIPELINE VALIDATION
+ *
+ * Allowed:
+ *
+ * APPLIED    → SCREENING
+ * SCREENING  → INTERVIEW
+ * INTERVIEW  → OFFER
+ * OFFER      → HIRED
+ *
+ * Rejected:
+ *
+ * APPLIED    → INTERVIEW
+ * APPLIED    → OFFER
+ * SCREENING  → OFFER
+ * INTERVIEW  → HIRED
+ *
+ * Also rejects:
+ *
+ * - Same stage → same stage
+ * - Backward transitions
+ * - Skipping stages
+ * - Transitions from REJECTED
  * ============================================================
  */
 
@@ -931,6 +901,10 @@ router.patch(
         });
       }
 
+      /**
+       * Validate requested stage.
+       */
+
       const validStages =
         Object.values(ApplicationStage);
 
@@ -946,6 +920,13 @@ router.patch(
           allowedStages: validStages,
         });
       }
+
+      const nextStage =
+        stage as ApplicationStage;
+
+      /**
+       * Find application.
+       */
 
       const existingApplication =
         await prisma.application.findUnique({
@@ -964,22 +945,101 @@ router.patch(
       const oldStage =
         existingApplication.stage;
 
+      /**
+       * Same stage is not a valid transition.
+       */
+
+      if (oldStage === nextStage) {
+        return res.status(400).json({
+          status: "error",
+          message:
+            `Application is already in ${oldStage} stage`,
+          currentStage: oldStage,
+          requestedStage: nextStage,
+        });
+      }
+
+      /**
+       * REJECTED cannot be changed through the
+       * normal pipeline endpoint.
+       *
+       * Use /reject or /reinstate.
+       */
+
+      if (oldStage === "REJECTED") {
+        return res.status(400).json({
+          status: "error",
+          message:
+            "Rejected applications cannot use normal pipeline transitions. Reinstate the application first.",
+          currentStage: oldStage,
+          requestedStage: nextStage,
+        });
+      }
+
+      /**
+       * REJECTED cannot be directly selected through
+       * the normal stage endpoint.
+       *
+       * Use /reject instead.
+       */
+
+      if (nextStage === "REJECTED") {
+        return res.status(400).json({
+          status: "error",
+          message:
+            "Use PATCH /api/applications/:id/reject to reject an application",
+        });
+      }
+
+      /**
+       * CENTRALIZED PIPELINE VALIDATION
+       */
+
+      if (
+        !isValidStageTransition(
+          oldStage,
+          nextStage
+        )
+      ) {
+        const allowedNextStages =
+          STAGE_TRANSITIONS[oldStage] ?? [];
+
+        return res.status(400).json({
+          status: "error",
+          message:
+            "Invalid application stage transition",
+          currentStage: oldStage,
+          requestedStage: nextStage,
+          allowedNextStages,
+        });
+      }
+
+      /**
+       * Update only after validation passes.
+       */
+
       const application =
         await prisma.application.update({
           where: {
             id,
           },
           data: {
-            stage: stage as ApplicationStage,
+            stage: nextStage,
           },
+          include: applicationInclude,
         });
+
+      /**
+       * Audit event.
+       */
 
       await createApplicationEvent({
         applicationId: id,
         actorId: req.user.userId,
-        type: ApplicationEventType.STAGE_CHANGED,
+        type:
+          ApplicationEventType.STAGE_CHANGED,
         description:
-          `Application stage changed from ${oldStage} to ${stage}`,
+          `Application stage changed from ${oldStage} to ${nextStage}`,
       });
 
       return res.status(200).json({
@@ -988,6 +1048,10 @@ router.patch(
           "Application stage updated successfully",
         data: {
           application,
+          transition: {
+            from: oldStage,
+            to: nextStage,
+          },
         },
       });
     } catch (error) {
@@ -1015,6 +1079,8 @@ router.patch(
  * ============================================================
  *
  * RECRUITER ONLY
+ *
+ * Rejects an application from any active pipeline stage.
  * ============================================================
  */
 
@@ -1067,6 +1133,21 @@ router.patch(
         });
       }
 
+      if (
+        application.stage ===
+        rejectedStage
+      ) {
+        return res.status(400).json({
+          status: "400",
+          message:
+            "Application is already rejected",
+          currentStage: application.stage,
+        });
+      }
+
+      const oldStage =
+        application.stage;
+
       const updatedApplication =
         await prisma.application.update({
           where: {
@@ -1075,21 +1156,28 @@ router.patch(
           data: {
             stage: rejectedStage,
           },
+          include: applicationInclude,
         });
 
       await createApplicationEvent({
         applicationId: id,
         actorId: req.user.userId,
-        type: ApplicationEventType.STAGE_CHANGED,
+        type:
+          ApplicationEventType.STAGE_CHANGED,
         description:
-          `Application rejected: stage changed from ${application.stage} to REJECTED`,
+          `Application rejected: stage changed from ${oldStage} to REJECTED`,
       });
 
       return res.status(200).json({
         status: "success",
-        message: "Candidate rejected successfully",
+        message:
+          "Candidate rejected successfully",
         data: {
           application: updatedApplication,
+          transition: {
+            from: oldStage,
+            to: rejectedStage,
+          },
         },
       });
     } catch (error) {
@@ -1100,7 +1188,8 @@ router.patch(
 
       return res.status(500).json({
         status: "error",
-        message: "Failed to reject candidate",
+        message:
+          "Failed to reject candidate",
         error:
           error instanceof Error
             ? error.message
@@ -1116,6 +1205,11 @@ router.patch(
  * ============================================================
  *
  * RECRUITER ONLY
+ *
+ * REJECTED → APPLIED
+ *
+ * This is the only supported way to move a rejected
+ * application back into the pipeline.
  * ============================================================
  */
 
@@ -1155,6 +1249,17 @@ router.patch(
         });
       }
 
+      if (
+        application.stage !== "REJECTED"
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message:
+            "Only rejected applications can be reinstated",
+          currentStage: application.stage,
+        });
+      }
+
       const oldStage =
         application.stage;
 
@@ -1166,12 +1271,14 @@ router.patch(
           data: {
             stage: ApplicationStage.APPLIED,
           },
+          include: applicationInclude,
         });
 
       await createApplicationEvent({
         applicationId: id,
         actorId: req.user.userId,
-        type: ApplicationEventType.STAGE_CHANGED,
+        type:
+          ApplicationEventType.STAGE_CHANGED,
         description:
           `Application reinstated: stage changed from ${oldStage} to APPLIED`,
       });
@@ -1182,6 +1289,10 @@ router.patch(
           "Candidate reinstated successfully",
         data: {
           application: updatedApplication,
+          transition: {
+            from: oldStage,
+            to: ApplicationStage.APPLIED,
+          },
         },
       });
     } catch (error) {
@@ -1280,7 +1391,10 @@ router.post(
         });
       }
 
-      if (interviewer.role !== "INTERVIEWER") {
+      if (
+        interviewer.role !==
+        "INTERVIEWER"
+      ) {
         return res.status(400).json({
           status: "error",
           message:
@@ -1293,7 +1407,8 @@ router.post(
           where: {
             applicationId_interviewerId: {
               applicationId,
-              interviewerId: cleanInterviewerId,
+              interviewerId:
+                cleanInterviewerId,
             },
           },
         });
@@ -1304,7 +1419,8 @@ router.post(
           message:
             "Interviewer is already assigned to this application",
           data: {
-            assignment: existingAssignment,
+            assignment:
+              existingAssignment,
           },
         });
       }
@@ -1313,7 +1429,8 @@ router.post(
         await prisma.applicationInterviewer.create({
           data: {
             applicationId,
-            interviewerId: cleanInterviewerId,
+            interviewerId:
+              cleanInterviewerId,
           },
           include: {
             interviewer: {
@@ -1367,11 +1484,6 @@ router.post(
  * ============================================================
  * DELETE /api/applications/:id/interviewers/:interviewerId
  * ============================================================
- *
- * RECRUITER ONLY
- *
- * Remove interviewer assignment.
- * ============================================================
  */
 
 router.delete(
@@ -1391,19 +1503,23 @@ router.delete(
         getParam(req.params.id);
 
       const interviewerId =
-        getParam(req.params.interviewerId);
+        getParam(
+          req.params.interviewerId
+        );
 
       if (!applicationId) {
         return res.status(400).json({
           status: "error",
-          message: "Application ID is required",
+          message:
+            "Application ID is required",
         });
       }
 
       if (!interviewerId) {
         return res.status(400).json({
           status: "error",
-          message: "Interviewer ID is required",
+          message:
+            "Interviewer ID is required",
         });
       }
 
@@ -1447,7 +1563,8 @@ router.delete(
       await createApplicationEvent({
         applicationId,
         actorId: req.user.userId,
-        type: ApplicationEventType.NOTE_ADDED,
+        type:
+          ApplicationEventType.NOTE_ADDED,
         description:
           `Interviewer ${assignment.interviewer.name} removed from application`,
       });
@@ -1485,8 +1602,6 @@ router.delete(
  * ============================================================
  *
  * INTERVIEWER ONLY
- *
- * The interviewer must be assigned to the application.
  * ============================================================
  */
 
@@ -1506,12 +1621,16 @@ router.post(
       const applicationId =
         getParam(req.params.id);
 
-      const { rating, comments } = req.body;
+      const {
+        rating,
+        comments,
+      } = req.body;
 
       if (!applicationId) {
         return res.status(400).json({
           status: "error",
-          message: "Application ID is required",
+          message:
+            "Application ID is required",
         });
       }
 
@@ -1534,7 +1653,8 @@ router.post(
       ) {
         return res.status(400).json({
           status: "error",
-          message: "comments are required",
+          message:
+            "comments are required",
         });
       }
 
@@ -1548,7 +1668,8 @@ router.post(
       if (!application) {
         return res.status(404).json({
           status: "error",
-          message: "Application not found",
+          message:
+            "Application not found",
         });
       }
 
@@ -1571,7 +1692,8 @@ router.post(
           where: {
             applicationId_interviewerId: {
               applicationId,
-              interviewerId: req.user.userId,
+              interviewerId:
+                req.user.userId,
             },
           },
         });
@@ -1582,7 +1704,8 @@ router.post(
           message:
             "You have already submitted feedback for this application",
           data: {
-            feedback: existingFeedback,
+            feedback:
+              existingFeedback,
           },
         });
       }
@@ -1591,9 +1714,11 @@ router.post(
         await prisma.feedback.create({
           data: {
             applicationId,
-            interviewerId: req.user.userId,
+            interviewerId:
+              req.user.userId,
             rating,
-            comments: comments.trim(),
+            comments:
+              comments.trim(),
           },
           include: {
             interviewer: {
@@ -1647,14 +1772,6 @@ router.post(
  * ============================================================
  * GET /api/applications/:id/feedback
  * ============================================================
- *
- * RECRUITER:
- *   Can view feedback for any application.
- *
- * INTERVIEWER:
- *   Can view feedback only for applications assigned
- *   to them.
- * ============================================================
  */
 
 router.get(
@@ -1665,7 +1782,8 @@ router.get(
       if (!req.user) {
         return res.status(401).json({
           status: "error",
-          message: "Authentication required",
+          message:
+            "Authentication required",
         });
       }
 
@@ -1675,7 +1793,8 @@ router.get(
       if (!applicationId) {
         return res.status(400).json({
           status: "error",
-          message: "Application ID is required",
+          message:
+            "Application ID is required",
         });
       }
 
@@ -1689,11 +1808,15 @@ router.get(
       if (!application) {
         return res.status(404).json({
           status: "error",
-          message: "Application not found",
+          message:
+            "Application not found",
         });
       }
 
-      if (req.user.role === "INTERVIEWER") {
+      if (
+        req.user.role ===
+        "INTERVIEWER"
+      ) {
         const assigned =
           await isInterviewerAssigned(
             applicationId,
