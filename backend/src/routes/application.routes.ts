@@ -12,9 +12,9 @@ import {
 
 const router = Router();
 
-/* ============================================================
+/* =========================================================
    CONSTANTS
-   ============================================================ */
+========================================================= */
 
 const VALID_APPLICATION_STAGES = [
   ApplicationStage.APPLIED,
@@ -26,93 +26,9 @@ const VALID_APPLICATION_STAGES = [
   ApplicationStage.WITHDRAWN,
 ] as const;
 
-type ValidApplicationStage =
-  (typeof VALID_APPLICATION_STAGES)[number];
-
-const VALID_EVENT_TYPES = [
-  ApplicationEventType.APPLICATION_CREATED,
-  ApplicationEventType.STAGE_CHANGED,
-  ApplicationEventType.NOTE_ADDED,
-  ApplicationEventType.INTERVIEWER_ASSIGNED,
-  ApplicationEventType.INTERVIEWER_REMOVED,
-  ApplicationEventType.FEEDBACK_ADDED,
-] as const;
-
-/* ============================================================
-   HELPERS
-   ============================================================ */
-
-/**
- * Safely get an Express route parameter.
- *
- * Express can type params as string | string[] | undefined.
- */
-const getParam = (
-  param: string | string[] | undefined
-): string | undefined => {
-  if (Array.isArray(param)) {
-    return param[0];
-  }
-
-  return param;
-};
-
-/**
- * IMPORTANT:
- * Express req.query values can be:
- *
- * string
- * ParsedQs
- * string[]
- * ParsedQs[]
- * undefined
- *
- * Therefore NEVER pass req.query.jobId directly
- * to a function expecting string.
- */
-const getQueryString = (
-  value: unknown
-): string | undefined => {
-  if (typeof value === "string") {
-    return value;
-  }
-
-  return undefined;
-};
-
-/**
- * UUID validation.
- */
-const isValidUUID = (value: string): boolean => {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-    value
-  );
-};
-
-/**
- * Check whether a stage is valid.
- */
-const isValidStage = (
-  value: string
-): value is ValidApplicationStage => {
-  return (
-    VALID_APPLICATION_STAGES as readonly string[]
-  ).includes(value);
-};
-
-/**
- * Valid pipeline transitions.
- *
- * APPLIED -> SCREENING
- * SCREENING -> INTERVIEW
- * INTERVIEW -> OFFER
- * OFFER -> HIRED
- *
- * Rejection is handled separately.
- */
 const VALID_TRANSITIONS: Record<
   ApplicationStage,
-  ApplicationStage[]
+  readonly ApplicationStage[]
 > = {
   [ApplicationStage.APPLIED]: [
     ApplicationStage.SCREENING,
@@ -137,20 +53,79 @@ const VALID_TRANSITIONS: Record<
   [ApplicationStage.WITHDRAWN]: [],
 };
 
-/**
- * Common application include object.
+const REJECTABLE_STAGES: ApplicationStage[] = [
+  ApplicationStage.APPLIED,
+  ApplicationStage.SCREENING,
+  ApplicationStage.INTERVIEW,
+  ApplicationStage.OFFER,
+];
+
+const REINSTATABLE_STAGES: ApplicationStage[] = [
+  ApplicationStage.APPLIED,
+  ApplicationStage.SCREENING,
+  ApplicationStage.INTERVIEW,
+  ApplicationStage.OFFER,
+];
+
+/* =========================================================
+   HELPERS
+========================================================= */
+
+function getParam(
+  param: string | string[] | undefined
+): string | undefined {
+  if (Array.isArray(param)) {
+    return param[0];
+  }
+
+  return param;
+}
+
+function getQueryString(
+  value: unknown
+): string | undefined {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (
+    Array.isArray(value) &&
+    typeof value[0] === "string"
+  ) {
+    return value[0];
+  }
+
+  return undefined;
+}
+
+function isValidUUID(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value
+  );
+}
+
+function isValidStage(
+  value: string
+): value is ApplicationStage {
+  return VALID_APPLICATION_STAGES.includes(
+    value as ApplicationStage
+  );
+}
+
+/*
+ * IMPORTANT:
+ * AuthUser uses `userId`, not `id`.
  */
+function getActorId(req: AuthRequest): string {
+  return req.user!.userId;
+}
+
+/* =========================================================
+   APPLICATION INCLUDE
+========================================================= */
+
 const applicationInclude = {
-  job: {
-    select: {
-      id: true,
-      title: true,
-      description: true,
-      status: true,
-      isArchived: true,
-      createdAt: true,
-    },
-  },
+  job: true,
 
   candidate: {
     select: {
@@ -158,15 +133,10 @@ const applicationInclude = {
       name: true,
       email: true,
       role: true,
-      createdAt: true,
     },
   },
 
   interviewers: {
-    orderBy: {
-      assignedAt: "desc" as const,
-    },
-
     include: {
       interviewer: {
         select: {
@@ -180,10 +150,6 @@ const applicationInclude = {
   },
 
   events: {
-    orderBy: {
-      createdAt: "desc" as const,
-    },
-
     include: {
       actor: {
         select: {
@@ -194,13 +160,13 @@ const applicationInclude = {
         },
       },
     },
-  },
 
-  feedback: {
     orderBy: {
       createdAt: "desc" as const,
     },
+  },
 
+  feedback: {
     include: {
       interviewer: {
         select: {
@@ -211,13 +177,16 @@ const applicationInclude = {
         },
       },
     },
+
+    orderBy: {
+      createdAt: "desc" as const,
+    },
   },
 };
 
-/* ============================================================
-   POST /api/applications
+/* =========================================================
    CREATE APPLICATION
-   ============================================================ */
+========================================================= */
 
 router.post(
   "/",
@@ -230,62 +199,24 @@ router.post(
         candidateId,
         source,
         notes,
-        stage,
       } = req.body;
 
-      if (
-        typeof jobId !== "string" ||
-        !isValidUUID(jobId)
-      ) {
+      if (!jobId || !candidateId) {
         return res.status(400).json({
           status: "error",
-          message: "Valid jobId is required",
+          message:
+            "jobId and candidateId are required",
         });
       }
 
       if (
-        typeof candidateId !== "string" ||
+        !isValidUUID(jobId) ||
         !isValidUUID(candidateId)
       ) {
         return res.status(400).json({
           status: "error",
-          message: "Valid candidateId is required",
-        });
-      }
-
-      if (
-        stage !== undefined &&
-        (
-          typeof stage !== "string" ||
-          !isValidStage(stage)
-        )
-      ) {
-        return res.status(400).json({
-          status: "error",
-          message: "Invalid application stage",
-          allowedStages: VALID_APPLICATION_STAGES,
-        });
-      }
-
-      if (
-        source !== undefined &&
-        source !== null &&
-        typeof source !== "string"
-      ) {
-        return res.status(400).json({
-          status: "error",
-          message: "Source must be a string",
-        });
-      }
-
-      if (
-        notes !== undefined &&
-        notes !== null &&
-        typeof notes !== "string"
-      ) {
-        return res.status(400).json({
-          status: "error",
-          message: "Notes must be a string",
+          message:
+            "jobId and candidateId must be valid UUIDs",
         });
       }
 
@@ -302,11 +233,12 @@ router.post(
         });
       }
 
-      const candidate = await prisma.user.findUnique({
-        where: {
-          id: candidateId,
-        },
-      });
+      const candidate =
+        await prisma.user.findUnique({
+          where: {
+            id: candidateId,
+          },
+        });
 
       if (!candidate) {
         return res.status(404).json({
@@ -318,7 +250,8 @@ router.post(
       if (candidate.role !== "CANDIDATE") {
         return res.status(400).json({
           status: "error",
-          message: "Specified user is not a candidate",
+          message:
+            "Selected user is not a candidate",
         });
       }
 
@@ -348,73 +281,53 @@ router.post(
           data: {
             jobId,
             candidateId,
+            source: source ?? null,
+            notes: notes ?? null,
+            stage: ApplicationStage.APPLIED,
 
-            source:
-              typeof source === "string" &&
-              source.trim()
-                ? source.trim()
-                : null,
-
-            notes:
-              typeof notes === "string" &&
-              notes.trim()
-                ? notes.trim()
-                : null,
-
-            stage:
-              stage && isValidStage(stage)
-                ? stage
-                : ApplicationStage.APPLIED,
+            events: {
+              create: {
+                actorId: getActorId(req),
+                type:
+                  ApplicationEventType.APPLICATION_CREATED,
+                oldValue: null,
+                newValue:
+                  ApplicationStage.APPLIED,
+                description:
+                  "Application created",
+              },
+            },
           },
 
           include: applicationInclude,
         });
 
-      await prisma.applicationEvent.create({
-        data: {
-          applicationId: application.id,
-          actorId: req.user?.userId,
-          type:
-            ApplicationEventType.APPLICATION_CREATED,
-          description: "Application created successfully",
-        },
-      });
-
       return res.status(201).json({
         status: "success",
-        message: "Application created successfully",
+        message:
+          "Application created successfully",
         data: {
           application,
         },
       });
     } catch (error) {
       console.error(
-        "POST /api/applications ERROR:",
+        "Create application error:",
         error
       );
 
       return res.status(500).json({
         status: "error",
-        message: "Failed to create application",
-        error:
-          error instanceof Error
-            ? error.message
-            : String(error),
+        message:
+          "Failed to create application",
       });
     }
   }
 );
 
-/* ============================================================
-   GET /api/applications
-
+/* =========================================================
    LIST APPLICATIONS
-
-   Query parameters:
-   ?jobId=<uuid>
-   ?candidateId=<uuid>
-   ?stage=SCREENING
-   ============================================================ */
+========================================================= */
 
 router.get(
   "/",
@@ -422,16 +335,6 @@ router.get(
   requireRole("RECRUITER"),
   async (req: AuthRequest, res: Response) => {
     try {
-      /*
-       * IMPORTANT FIX:
-       * Never do:
-       *
-       * isValidUUID(req.query.jobId)
-       *
-       * because req.query.jobId can be ParsedQs.
-       *
-       * Convert it safely first.
-       */
       const jobId = getQueryString(
         req.query.jobId
       );
@@ -444,158 +347,98 @@ router.get(
         req.query.stage
       );
 
-      if (
-        jobId !== undefined &&
-        !isValidUUID(jobId)
-      ) {
+      if (jobId && !isValidUUID(jobId)) {
         return res.status(400).json({
           status: "error",
-          message: "Invalid jobId",
+          message:
+            "jobId must be a valid UUID",
         });
       }
 
       if (
-        candidateId !== undefined &&
+        candidateId &&
         !isValidUUID(candidateId)
       ) {
         return res.status(400).json({
           status: "error",
-          message: "Invalid candidateId",
+          message:
+            "candidateId must be a valid UUID",
         });
       }
 
       if (
-        stage !== undefined &&
+        stage &&
         !isValidStage(stage)
       ) {
         return res.status(400).json({
           status: "error",
-          message: "Invalid application stage",
-          allowedStages: VALID_APPLICATION_STAGES,
+          message:
+            "Invalid application stage",
         });
       }
 
       const applications =
         await prisma.application.findMany({
           where: {
-            ...(jobId
-              ? {
-                  jobId,
-                }
-              : {}),
-
+            ...(jobId ? { jobId } : {}),
             ...(candidateId
-              ? {
-                  candidateId,
-                }
+              ? { candidateId }
               : {}),
-
             ...(stage
               ? {
-                  stage,
+                  stage:
+                    stage as ApplicationStage,
                 }
               : {}),
           },
+
+          include: applicationInclude,
 
           orderBy: {
             createdAt: "desc",
-          },
-
-          include: {
-            job: {
-              select: {
-                id: true,
-                title: true,
-                description: true,
-                status: true,
-                isArchived: true,
-                createdAt: true,
-              },
-            },
-
-            candidate: {
-              select: {
-                id: true,
-                name: true,
-                email: true,
-                role: true,
-              },
-            },
-
-            interviewers: {
-              include: {
-                interviewer: {
-                  select: {
-                    id: true,
-                    name: true,
-                    email: true,
-                    role: true,
-                  },
-                },
-              },
-            },
-
-            feedback: true,
-
-            events: {
-              orderBy: {
-                createdAt: "desc",
-              },
-              take: 10,
-            },
           },
         });
 
       return res.status(200).json({
         status: "success",
-        message:
-          "Applications fetched successfully",
         data: {
           applications,
         },
       });
     } catch (error) {
       console.error(
-        "GET /api/applications ERROR:",
+        "List applications error:",
         error
       );
 
       return res.status(500).json({
         status: "error",
-        message: "Failed to fetch applications",
-        error:
-          error instanceof Error
-            ? error.message
-            : String(error),
+        message:
+          "Failed to fetch applications",
       });
     }
   }
 );
 
-/* ============================================================
-   GET /api/applications/:id
-   VIEW APPLICATION
-   ============================================================ */
+/* =========================================================
+   APPLICATION HISTORY
+========================================================= */
 
 router.get(
-  "/:id",
+  "/:id/history",
   requireAuth,
   requireRole("RECRUITER"),
   async (req: AuthRequest, res: Response) => {
     try {
-      const id = getParam(req.params.id);
+      const id = getParam(
+        req.params.id
+      );
 
-      if (!id) {
+      if (!id || !isValidUUID(id)) {
         return res.status(400).json({
           status: "error",
-          message: "Application ID is required",
-        });
-      }
-
-      if (!isValidUUID(id)) {
-        return res.status(400).json({
-          status: "error",
-          message: "Invalid application ID",
+          message:
+            "Invalid application ID",
         });
       }
 
@@ -604,46 +447,122 @@ router.get(
           where: {
             id,
           },
+
+          select: {
+            id: true,
+
+            events: {
+              include: {
+                actor: {
+                  select: {
+                    id: true,
+                    name: true,
+                    email: true,
+                    role: true,
+                  },
+                },
+              },
+
+              orderBy: {
+                createdAt: "asc",
+              },
+            },
+          },
+        });
+
+      if (!application) {
+        return res.status(404).json({
+          status: "error",
+          message:
+            "Application not found",
+        });
+      }
+
+      return res.status(200).json({
+        status: "success",
+        data: {
+          applicationId: application.id,
+          history: application.events,
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Get application history error:",
+        error
+      );
+
+      return res.status(500).json({
+        status: "error",
+        message:
+          "Failed to fetch application history",
+      });
+    }
+  }
+);
+
+/* =========================================================
+   GET APPLICATION
+========================================================= */
+
+router.get(
+  "/:id",
+  requireAuth,
+  requireRole("RECRUITER"),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const id = getParam(
+        req.params.id
+      );
+
+      if (!id || !isValidUUID(id)) {
+        return res.status(400).json({
+          status: "error",
+          message:
+            "Invalid application ID",
+        });
+      }
+
+      const application =
+        await prisma.application.findUnique({
+          where: {
+            id,
+          },
+
           include: applicationInclude,
         });
 
       if (!application) {
         return res.status(404).json({
           status: "error",
-          message: "Application not found",
+          message:
+            "Application not found",
         });
       }
 
       return res.status(200).json({
         status: "success",
-        message:
-          "Application fetched successfully",
         data: {
           application,
         },
       });
     } catch (error) {
       console.error(
-        "GET /api/applications/:id ERROR:",
+        "Get application error:",
         error
       );
 
       return res.status(500).json({
         status: "error",
-        message: "Failed to fetch application",
-        error:
-          error instanceof Error
-            ? error.message
-            : String(error),
+        message:
+          "Failed to fetch application",
       });
     }
   }
 );
 
-/* ============================================================
-   PATCH /api/applications/:id
+/* =========================================================
    EDIT APPLICATION
-   ============================================================ */
+========================================================= */
 
 router.patch(
   "/:id",
@@ -651,12 +570,15 @@ router.patch(
   requireRole("RECRUITER"),
   async (req: AuthRequest, res: Response) => {
     try {
-      const id = getParam(req.params.id);
+      const id = getParam(
+        req.params.id
+      );
 
       if (!id || !isValidUUID(id)) {
         return res.status(400).json({
           status: "error",
-          message: "Invalid application ID",
+          message:
+            "Invalid application ID",
         });
       }
 
@@ -665,39 +587,18 @@ router.patch(
         notes,
       } = req.body;
 
-      if (
-        source !== undefined &&
-        source !== null &&
-        typeof source !== "string"
-      ) {
-        return res.status(400).json({
-          status: "error",
-          message: "Source must be a string",
-        });
-      }
-
-      if (
-        notes !== undefined &&
-        notes !== null &&
-        typeof notes !== "string"
-      ) {
-        return res.status(400).json({
-          status: "error",
-          message: "Notes must be a string",
-        });
-      }
-
-      const existing =
+      const existingApplication =
         await prisma.application.findUnique({
           where: {
             id,
           },
         });
 
-      if (!existing) {
+      if (!existingApplication) {
         return res.status(404).json({
           status: "error",
-          message: "Application not found",
+          message:
+            "Application not found",
         });
       }
 
@@ -709,41 +610,32 @@ router.patch(
 
           data: {
             ...(source !== undefined
-              ? {
-                  source:
-                    typeof source === "string" &&
-                    source.trim()
-                      ? source.trim()
-                      : null,
-                }
+              ? { source }
               : {}),
 
             ...(notes !== undefined
-              ? {
-                  notes:
-                    typeof notes === "string" &&
-                    notes.trim()
-                      ? notes.trim()
-                      : null,
-                }
+              ? { notes }
               : {}),
+
+            events: {
+              create: {
+                actorId: getActorId(req),
+                type:
+                  ApplicationEventType.NOTE_ADDED,
+                oldValue:
+                  existingApplication.notes,
+                newValue:
+                  notes !== undefined
+                    ? String(notes)
+                    : existingApplication.notes,
+                description:
+                  "Application notes/source updated",
+              },
+            },
           },
 
           include: applicationInclude,
         });
-
-      if (notes !== undefined) {
-        await prisma.applicationEvent.create({
-          data: {
-            applicationId: id,
-            actorId: req.user?.userId,
-            type:
-              ApplicationEventType.NOTE_ADDED,
-            description:
-              "Application notes updated",
-          },
-        });
-      }
 
       return res.status(200).json({
         status: "success",
@@ -755,33 +647,22 @@ router.patch(
       });
     } catch (error) {
       console.error(
-        "PATCH /api/applications/:id ERROR:",
+        "Update application error:",
         error
       );
 
       return res.status(500).json({
         status: "error",
-        message: "Failed to update application",
-        error:
-          error instanceof Error
-            ? error.message
-            : String(error),
+        message:
+          "Failed to update application",
       });
     }
   }
 );
 
-/* ============================================================
-   PATCH /api/applications/:id/stage
-
-   VALID:
-   APPLIED -> SCREENING
-   SCREENING -> INTERVIEW
-   INTERVIEW -> OFFER
-   OFFER -> HIRED
-
-   Invalid transitions are rejected.
-   ============================================================ */
+/* =========================================================
+   CHANGE APPLICATION STAGE
+========================================================= */
 
 router.patch(
   "/:id/stage",
@@ -789,43 +670,54 @@ router.patch(
   requireRole("RECRUITER"),
   async (req: AuthRequest, res: Response) => {
     try {
-      const id = getParam(req.params.id);
+      const id = getParam(
+        req.params.id
+      );
 
       if (!id || !isValidUUID(id)) {
         return res.status(400).json({
           status: "error",
-          message: "Invalid application ID",
+          message:
+            "Invalid application ID",
         });
       }
 
       const { stage } = req.body;
 
       if (
-        typeof stage !== "string" ||
-        !isValidStage(stage)
+        !stage ||
+        typeof stage !== "string"
       ) {
         return res.status(400).json({
           status: "error",
-          message: "Invalid application stage",
-          allowedStages: VALID_APPLICATION_STAGES,
+          message:
+            "stage is required",
         });
       }
 
-      /*
-       * REJECTED must use /reject.
-       */
-      if (stage === ApplicationStage.REJECTED) {
+      if (!isValidStage(stage)) {
         return res.status(400).json({
           status: "error",
           message:
-            "Use PATCH /api/applications/:id/reject to reject an application",
+            "Invalid application stage",
         });
       }
 
-      /*
-       * WITHDRAWN is intentionally handled separately.
-       */
-      if (stage === ApplicationStage.WITHDRAWN) {
+      if (
+        stage ===
+        ApplicationStage.REJECTED
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message:
+            "Use the /reject endpoint to reject an application",
+        });
+      }
+
+      if (
+        stage ===
+        ApplicationStage.WITHDRAWN
+      ) {
         return res.status(400).json({
           status: "error",
           message:
@@ -843,108 +735,88 @@ router.patch(
       if (!existingApplication) {
         return res.status(404).json({
           status: "error",
-          message: "Application not found",
+          message:
+            "Application not found",
         });
       }
 
       const oldStage =
         existingApplication.stage;
 
-      if (oldStage === stage) {
-        return res.status(400).json({
-          status: "error",
-          message:
-            `Application is already in ${stage} stage`,
-        });
-      }
-
-      const allowedNextStages =
+      const allowedTransitions =
         VALID_TRANSITIONS[oldStage];
 
-      if (!allowedNextStages.includes(stage)) {
+      if (
+        !allowedTransitions.includes(
+          stage
+        )
+      ) {
         return res.status(400).json({
           status: "error",
           message:
             `Invalid stage transition from ${oldStage} to ${stage}`,
-          currentStage: oldStage,
-          allowedNextStages,
         });
       }
 
       const application =
-        await prisma.$transaction(
-          async (tx) => {
-            const updated =
-              await tx.application.update({
-                where: {
-                  id,
-                },
+        await prisma.application.update({
+          where: {
+            id,
+          },
 
-                data: {
-                  stage,
-                  rejectedFromStage: null,
-                },
+          data: {
+            stage,
 
-                include: applicationInclude,
-              });
+            rejectedFromStage: null,
 
-            await tx.applicationEvent.create({
-              data: {
-                applicationId: id,
-                actorId: req.user?.userId,
+            events: {
+              create: {
+                actorId: getActorId(req),
                 type:
                   ApplicationEventType.STAGE_CHANGED,
+                oldValue: oldStage,
+                newValue: stage,
                 description:
                   `Application stage changed from ${oldStage} to ${stage}`,
               },
-            });
+            },
+          },
 
-            return updated;
-          }
-        );
+          include: applicationInclude,
+        });
 
       return res.status(200).json({
         status: "success",
         message:
           "Application stage updated successfully",
+
         data: {
           application,
-          previousStage: oldStage,
-          currentStage: stage,
+
+          transition: {
+            from: oldStage,
+            to: stage,
+          },
         },
       });
     } catch (error) {
       console.error(
-        "PATCH /api/applications/:id/stage ERROR:",
+        "Change application stage error:",
         error
       );
 
       return res.status(500).json({
         status: "error",
         message:
-          "Failed to update application stage",
-        error:
-          error instanceof Error
-            ? error.message
-            : String(error),
+          "Failed to change application stage",
       });
     }
   }
 );
 
-/* ============================================================
-   PATCH /api/applications/:id/reject
-
-   PHASE 10
-
-   Allowed:
-   APPLIED -> REJECTED
-   SCREENING -> REJECTED
-   INTERVIEW -> REJECTED
-   OFFER -> REJECTED
-
-   Stores rejectedFromStage.
-   ============================================================ */
+/* =========================================================
+   REJECT APPLICATION
+========================================================= */
 
 router.patch(
   "/:id/reject",
@@ -952,126 +824,110 @@ router.patch(
   requireRole("RECRUITER"),
   async (req: AuthRequest, res: Response) => {
     try {
-      const id = getParam(req.params.id);
+      const id = getParam(
+        req.params.id
+      );
 
       if (!id || !isValidUUID(id)) {
         return res.status(400).json({
           status: "error",
-          message: "Invalid application ID",
+          message:
+            "Invalid application ID",
         });
       }
 
-      const application =
+      const existingApplication =
         await prisma.application.findUnique({
           where: {
             id,
           },
         });
 
-      if (!application) {
+      if (!existingApplication) {
         return res.status(404).json({
           status: "error",
-          message: "Application not found",
+          message:
+            "Application not found",
         });
       }
 
-      const rejectableStages: ApplicationStage[] = [
-        ApplicationStage.APPLIED,
-        ApplicationStage.SCREENING,
-        ApplicationStage.INTERVIEW,
-        ApplicationStage.OFFER,
-      ];
+      const oldStage =
+        existingApplication.stage;
 
       if (
-        !rejectableStages.includes(
-          application.stage
+        !REJECTABLE_STAGES.includes(
+          oldStage
         )
       ) {
         return res.status(400).json({
           status: "error",
           message:
-            "Application can only be rejected from APPLIED, SCREENING, INTERVIEW, or OFFER",
-          currentStage:
-            application.stage,
+            `Application cannot be rejected from ${oldStage}`,
         });
       }
 
-      const rejectedFromStage =
-        application.stage;
+      const application =
+        await prisma.application.update({
+          where: {
+            id,
+          },
 
-      const updatedApplication =
-        await prisma.$transaction(
-          async (tx) => {
-            const updated =
-              await tx.application.update({
-                where: {
-                  id,
-                },
+          data: {
+            stage:
+              ApplicationStage.REJECTED,
 
-                data: {
-                  stage:
-                    ApplicationStage.REJECTED,
+            rejectedFromStage: oldStage,
 
-                  rejectedFromStage,
-                },
-
-                include: applicationInclude,
-              });
-
-            await tx.applicationEvent.create({
-              data: {
-                applicationId: id,
-                actorId: req.user?.userId,
+            events: {
+              create: {
+                actorId: getActorId(req),
                 type:
-                  ApplicationEventType.STAGE_CHANGED,
+                  ApplicationEventType.REJECTION,
+                oldValue: oldStage,
+                newValue:
+                  ApplicationStage.REJECTED,
                 description:
-                  `Application rejected from ${rejectedFromStage}`,
+                  `Application rejected from ${oldStage}`,
               },
-            });
+            },
+          },
 
-            return updated;
-          }
-        );
+          include: applicationInclude,
+        });
 
       return res.status(200).json({
         status: "success",
         message:
-          "Candidate rejected successfully",
+          "Application rejected successfully",
+
         data: {
-          application:
-            updatedApplication,
-          rejectedFromStage,
+          application,
+
+          transition: {
+            from: oldStage,
+            to:
+              ApplicationStage.REJECTED,
+          },
         },
       });
     } catch (error) {
       console.error(
-        "PATCH /api/applications/:id/reject ERROR:",
+        "Reject application error:",
         error
       );
 
       return res.status(500).json({
         status: "error",
         message:
-          "Failed to reject candidate",
-        error:
-          error instanceof Error
-            ? error.message
-            : String(error),
+          "Failed to reject application",
       });
     }
   }
 );
 
-/* ============================================================
-   PATCH /api/applications/:id/reinstate
-
-   REJECTED -> rejectedFromStage
-
-   APPLIED -> REJECTED -> APPLIED
-   SCREENING -> REJECTED -> SCREENING
-   INTERVIEW -> REJECTED -> INTERVIEW
-   OFFER -> REJECTED -> OFFER
-   ============================================================ */
+/* =========================================================
+   REINSTATE APPLICATION
+========================================================= */
 
 router.patch(
   "/:id/reinstate",
@@ -1079,152 +935,128 @@ router.patch(
   requireRole("RECRUITER"),
   async (req: AuthRequest, res: Response) => {
     try {
-      const id = getParam(req.params.id);
+      const id = getParam(
+        req.params.id
+      );
 
       if (!id || !isValidUUID(id)) {
         return res.status(400).json({
           status: "error",
-          message: "Invalid application ID",
+          message:
+            "Invalid application ID",
         });
       }
 
-      const application =
+      const existingApplication =
         await prisma.application.findUnique({
           where: {
             id,
           },
         });
 
-      if (!application) {
+      if (!existingApplication) {
         return res.status(404).json({
           status: "error",
-          message: "Application not found",
+          message:
+            "Application not found",
         });
       }
 
       if (
-        application.stage !==
+        existingApplication.stage !==
         ApplicationStage.REJECTED
       ) {
         return res.status(400).json({
           status: "error",
           message:
             "Only rejected applications can be reinstated",
-          currentStage:
-            application.stage,
         });
       }
 
       const previousStage =
-        application.rejectedFromStage;
+        existingApplication.rejectedFromStage;
 
       if (!previousStage) {
         return res.status(400).json({
           status: "error",
           message:
-            "Rejected application does not have rejectedFromStage",
+            "Application does not contain its previous stage",
         });
       }
 
-      const allowedReinstatementStages: ApplicationStage[] =
-        [
-          ApplicationStage.APPLIED,
-          ApplicationStage.SCREENING,
-          ApplicationStage.INTERVIEW,
-          ApplicationStage.OFFER,
-        ];
-
       if (
-        !allowedReinstatementStages.includes(
+        !REINSTATABLE_STAGES.includes(
           previousStage
         )
       ) {
         return res.status(400).json({
           status: "error",
           message:
-            "Invalid rejectedFromStage",
-          rejectedFromStage:
-            previousStage,
+            `Cannot reinstate application to ${previousStage}`,
         });
       }
 
-      const updatedApplication =
-        await prisma.$transaction(
-          async (tx) => {
-            const updated =
-              await tx.application.update({
-                where: {
-                  id,
-                },
+      const application =
+        await prisma.application.update({
+          where: {
+            id,
+          },
 
-                data: {
-                  stage:
-                    previousStage,
+          data: {
+            stage: previousStage,
 
-                  rejectedFromStage:
-                    null,
-                },
+            rejectedFromStage: null,
 
-                include: applicationInclude,
-              });
-
-            await tx.applicationEvent.create({
-              data: {
-                applicationId: id,
-                actorId: req.user?.userId,
+            events: {
+              create: {
+                actorId: getActorId(req),
                 type:
-                  ApplicationEventType.STAGE_CHANGED,
+                  ApplicationEventType.REINSTATEMENT,
+                oldValue:
+                  ApplicationStage.REJECTED,
+                newValue: previousStage,
                 description:
                   `Application reinstated from REJECTED to ${previousStage}`,
               },
-            });
+            },
+          },
 
-            return updated;
-          }
-        );
+          include: applicationInclude,
+        });
 
       return res.status(200).json({
         status: "success",
         message:
-          "Candidate reinstated successfully",
+          "Application reinstated successfully",
+
         data: {
-          application:
-            updatedApplication,
+          application,
 
           transition: {
             from:
               ApplicationStage.REJECTED,
-
             to: previousStage,
           },
         },
       });
     } catch (error) {
       console.error(
-        "PATCH /api/applications/:id/reinstate ERROR:",
+        "Reinstate application error:",
         error
       );
 
       return res.status(500).json({
         status: "error",
         message:
-          "Failed to reinstate candidate",
-        error:
-          error instanceof Error
-            ? error.message
-            : String(error),
+          "Failed to reinstate application",
       });
     }
   }
 );
 
-/* ============================================================
-   POST /api/applications/:id/interviewers
-
+/* =========================================================
    ASSIGN INTERVIEWER
-
-   RECRUITER ONLY
-   ============================================================ */
+========================================================= */
 
 router.post(
   "/:id/interviewers",
@@ -1232,25 +1064,23 @@ router.post(
   requireRole("RECRUITER"),
   async (req: AuthRequest, res: Response) => {
     try {
-      const applicationId =
-        getParam(req.params.id);
+      const id = getParam(
+        req.params.id
+      );
 
-      if (
-        !applicationId ||
-        !isValidUUID(applicationId)
-      ) {
+      const { interviewerId } =
+        req.body;
+
+      if (!id || !isValidUUID(id)) {
         return res.status(400).json({
           status: "error",
-          message: "Invalid application ID",
+          message:
+            "Invalid application ID",
         });
       }
 
-      const {
-        interviewerId,
-      } = req.body;
-
       if (
-        typeof interviewerId !== "string" ||
+        !interviewerId ||
         !isValidUUID(interviewerId)
       ) {
         return res.status(400).json({
@@ -1263,14 +1093,15 @@ router.post(
       const application =
         await prisma.application.findUnique({
           where: {
-            id: applicationId,
+            id,
           },
         });
 
       if (!application) {
         return res.status(404).json({
           status: "error",
-          message: "Application not found",
+          message:
+            "Application not found",
         });
       }
 
@@ -1284,15 +1115,19 @@ router.post(
       if (!interviewer) {
         return res.status(404).json({
           status: "error",
-          message: "Interviewer not found",
+          message:
+            "Interviewer not found",
         });
       }
 
-      if (interviewer.role !== "INTERVIEWER") {
+      if (
+        interviewer.role !==
+        "INTERVIEWER"
+      ) {
         return res.status(400).json({
           status: "error",
           message:
-            "Specified user is not an interviewer",
+            "Selected user is not an interviewer",
         });
       }
 
@@ -1301,7 +1136,7 @@ router.post(
           {
             where: {
               applicationId_interviewerId: {
-                applicationId,
+                applicationId: id,
                 interviewerId,
               },
             },
@@ -1312,46 +1147,30 @@ router.post(
         return res.status(409).json({
           status: "error",
           message:
-            "Interviewer is already assigned to this application",
+            "Interviewer is already assigned",
         });
       }
 
       const assignment =
-        await prisma.applicationInterviewer.create({
-          data: {
-            applicationId,
-            interviewerId,
-          },
-
-          include: {
-            interviewer: {
-              select: {
-                id: true,
-                name: true,
-                email: true,
-                role: true,
-              },
+        await prisma.applicationInterviewer.create(
+          {
+            data: {
+              applicationId: id,
+              interviewerId,
             },
-
-            application: {
-              select: {
-                id: true,
-                stage: true,
-                candidateId: true,
-                jobId: true,
-              },
-            },
-          },
-        });
+          }
+        );
 
       await prisma.applicationEvent.create({
         data: {
-          applicationId,
-          actorId: req.user?.userId,
+          applicationId: id,
+          actorId: getActorId(req),
           type:
             ApplicationEventType.INTERVIEWER_ASSIGNED,
+          oldValue: null,
+          newValue: interviewerId,
           description:
-            `Interviewer ${interviewer.name} assigned to application`,
+            `Interviewer ${interviewer.name} assigned`,
         },
       });
 
@@ -1365,7 +1184,7 @@ router.post(
       });
     } catch (error) {
       console.error(
-        "POST /api/applications/:id/interviewers ERROR:",
+        "Assign interviewer error:",
         error
       );
 
@@ -1373,18 +1192,14 @@ router.post(
         status: "error",
         message:
           "Failed to assign interviewer",
-        error:
-          error instanceof Error
-            ? error.message
-            : String(error),
       });
     }
   }
 );
 
-/* ============================================================
-   DELETE /api/applications/:id/interviewers/:interviewerId
-   ============================================================ */
+/* =========================================================
+   REMOVE INTERVIEWER
+========================================================= */
 
 router.delete(
   "/:id/interviewers/:interviewerId",
@@ -1392,22 +1207,31 @@ router.delete(
   requireRole("RECRUITER"),
   async (req: AuthRequest, res: Response) => {
     try {
-      const applicationId =
-        getParam(req.params.id);
+      const id = getParam(
+        req.params.id
+      );
 
       const interviewerId =
-        getParam(req.params.interviewerId);
+        getParam(
+          req.params.interviewerId
+        );
+
+      if (!id || !isValidUUID(id)) {
+        return res.status(400).json({
+          status: "error",
+          message:
+            "Invalid application ID",
+        });
+      }
 
       if (
-        !applicationId ||
         !interviewerId ||
-        !isValidUUID(applicationId) ||
         !isValidUUID(interviewerId)
       ) {
         return res.status(400).json({
           status: "error",
           message:
-            "Invalid application or interviewer ID",
+            "Invalid interviewer ID",
         });
       }
 
@@ -1416,19 +1240,8 @@ router.delete(
           {
             where: {
               applicationId_interviewerId: {
-                applicationId,
+                applicationId: id,
                 interviewerId,
-              },
-            },
-
-            include: {
-              interviewer: {
-                select: {
-                  id: true,
-                  name: true,
-                  email: true,
-                  role: true,
-                },
               },
             },
           }
@@ -1445,7 +1258,7 @@ router.delete(
       await prisma.applicationInterviewer.delete({
         where: {
           applicationId_interviewerId: {
-            applicationId,
+            applicationId: id,
             interviewerId,
           },
         },
@@ -1453,12 +1266,14 @@ router.delete(
 
       await prisma.applicationEvent.create({
         data: {
-          applicationId,
-          actorId: req.user?.userId,
+          applicationId: id,
+          actorId: getActorId(req),
           type:
             ApplicationEventType.INTERVIEWER_REMOVED,
+          oldValue: interviewerId,
+          newValue: null,
           description:
-            `Interviewer ${assignment.interviewer.name} removed from application`,
+            "Interviewer removed",
         },
       });
 
@@ -1469,7 +1284,7 @@ router.delete(
       });
     } catch (error) {
       console.error(
-        "DELETE /api/applications/:id/interviewers/:interviewerId ERROR:",
+        "Remove interviewer error:",
         error
       );
 
@@ -1477,22 +1292,14 @@ router.delete(
         status: "error",
         message:
           "Failed to remove interviewer",
-        error:
-          error instanceof Error
-            ? error.message
-            : String(error),
       });
     }
   }
 );
 
-/* ============================================================
-   POST /api/applications/:id/feedback
-
-   INTERVIEWER ONLY
-
-   Feedback cannot be deleted.
-   ============================================================ */
+/* =========================================================
+   FEEDBACK
+========================================================= */
 
 router.post(
   "/:id/feedback",
@@ -1500,34 +1307,33 @@ router.post(
   requireRole("INTERVIEWER"),
   async (req: AuthRequest, res: Response) => {
     try {
-      const applicationId =
-        getParam(req.params.id);
-
-      if (
-        !applicationId ||
-        !isValidUUID(applicationId)
-      ) {
-        return res.status(400).json({
-          status: "error",
-          message: "Invalid application ID",
-        });
-      }
+      const id = getParam(
+        req.params.id
+      );
 
       const {
         rating,
         comments,
       } = req.body;
 
+      if (!id || !isValidUUID(id)) {
+        return res.status(400).json({
+          status: "error",
+          message:
+            "Invalid application ID",
+        });
+      }
+
       if (
         typeof rating !== "number" ||
-        !Number.isInteger(rating) ||
         rating < 1 ||
-        rating > 5
+        rating > 5 ||
+        !Number.isInteger(rating)
       ) {
         return res.status(400).json({
           status: "error",
           message:
-            "Rating must be an integer between 1 and 5",
+            "rating must be an integer between 1 and 5",
         });
       }
 
@@ -1538,32 +1344,22 @@ router.post(
         return res.status(400).json({
           status: "error",
           message:
-            "Feedback comments are required",
+            "comments are required",
         });
       }
 
       const application =
         await prisma.application.findUnique({
           where: {
-            id: applicationId,
+            id,
           },
         });
 
       if (!application) {
         return res.status(404).json({
           status: "error",
-          message: "Application not found",
-        });
-      }
-
-      const interviewerId =
-        req.user?.userId;
-
-      if (!interviewerId) {
-        return res.status(401).json({
-          status: "error",
           message:
-            "Authenticated interviewer not found",
+            "Application not found",
         });
       }
 
@@ -1572,8 +1368,9 @@ router.post(
           {
             where: {
               applicationId_interviewerId: {
-                applicationId,
-                interviewerId,
+                applicationId: id,
+                interviewerId:
+                  getActorId(req),
               },
             },
           }
@@ -1591,53 +1388,51 @@ router.post(
         await prisma.feedback.findUnique({
           where: {
             applicationId_interviewerId: {
-              applicationId,
-              interviewerId,
+              applicationId: id,
+              interviewerId:
+                getActorId(req),
             },
           },
         });
 
-      /*
-       * Feedback is immutable.
-       * Do not update existing feedback.
-       */
-      if (existingFeedback) {
-        return res.status(409).json({
-          status: "error",
-          message:
-            "Feedback has already been submitted for this application",
-        });
-      }
-
       const feedback =
-        await prisma.feedback.create({
-          data: {
-            applicationId,
-            interviewerId,
+        await prisma.feedback.upsert({
+          where: {
+            applicationId_interviewerId: {
+              applicationId: id,
+              interviewerId:
+                getActorId(req),
+            },
+          },
+
+          create: {
+            applicationId: id,
+            interviewerId:
+              getActorId(req),
             rating,
             comments: comments.trim(),
           },
 
-          include: {
-            interviewer: {
-              select: {
-                id: true,
-                name: true,
-                email: true,
-                role: true,
-              },
-            },
+          update: {
+            rating,
+            comments: comments.trim(),
           },
         });
 
       await prisma.applicationEvent.create({
         data: {
-          applicationId,
-          actorId: interviewerId,
+          applicationId: id,
+          actorId: getActorId(req),
           type:
             ApplicationEventType.FEEDBACK_ADDED,
+          oldValue: existingFeedback
+            ? `rating=${existingFeedback.rating}`
+            : null,
+          newValue: `rating=${rating}`,
           description:
-            `Feedback submitted by ${feedback.interviewer.name}`,
+            existingFeedback
+              ? "Interview feedback updated"
+              : "Interview feedback added",
         },
       });
 
@@ -1651,7 +1446,7 @@ router.post(
       });
     } catch (error) {
       console.error(
-        "POST /api/applications/:id/feedback ERROR:",
+        "Add feedback error:",
         error
       );
 
@@ -1659,336 +1454,9 @@ router.post(
         status: "error",
         message:
           "Failed to submit feedback",
-        error:
-          error instanceof Error
-            ? error.message
-            : String(error),
       });
     }
   }
 );
-
-/* ============================================================
-   GET /api/applications/:id/feedback
-   ============================================================ */
-
-router.get(
-  "/:id/feedback",
-  requireAuth,
-  requireRole("RECRUITER"),
-  async (req: AuthRequest, res: Response) => {
-    try {
-      const applicationId =
-        getParam(req.params.id);
-
-      if (
-        !applicationId ||
-        !isValidUUID(applicationId)
-      ) {
-        return res.status(400).json({
-          status: "error",
-          message: "Invalid application ID",
-        });
-      }
-
-      const application =
-        await prisma.application.findUnique({
-          where: {
-            id: applicationId,
-          },
-          select: {
-            id: true,
-          },
-        });
-
-      if (!application) {
-        return res.status(404).json({
-          status: "error",
-          message: "Application not found",
-        });
-      }
-
-      const feedback =
-        await prisma.feedback.findMany({
-          where: {
-            applicationId,
-          },
-
-          orderBy: {
-            createdAt: "desc",
-          },
-
-          include: {
-            interviewer: {
-              select: {
-                id: true,
-                name: true,
-                email: true,
-                role: true,
-              },
-            },
-          },
-        });
-
-      return res.status(200).json({
-        status: "success",
-        message:
-          "Application feedback fetched successfully",
-        data: {
-          feedback,
-        },
-      });
-    } catch (error) {
-      console.error(
-        "GET /api/applications/:id/feedback ERROR:",
-        error
-      );
-
-      return res.status(500).json({
-        status: "error",
-        message:
-          "Failed to fetch application feedback",
-        error:
-          error instanceof Error
-            ? error.message
-            : String(error),
-      });
-    }
-  }
-);
-
-/* ============================================================
-   GET /api/applications/:id/events
-
-   IMMUTABLE HISTORY
-   ============================================================ */
-
-router.get(
-  "/:id/events",
-  requireAuth,
-  requireRole("RECRUITER"),
-  async (req: AuthRequest, res: Response) => {
-    try {
-      const applicationId =
-        getParam(req.params.id);
-
-      if (
-        !applicationId ||
-        !isValidUUID(applicationId)
-      ) {
-        return res.status(400).json({
-          status: "error",
-          message: "Invalid application ID",
-        });
-      }
-
-      const application =
-        await prisma.application.findUnique({
-          where: {
-            id: applicationId,
-          },
-          select: {
-            id: true,
-          },
-        });
-
-      if (!application) {
-        return res.status(404).json({
-          status: "error",
-          message: "Application not found",
-        });
-      }
-
-      const events =
-        await prisma.applicationEvent.findMany({
-          where: {
-            applicationId,
-          },
-
-          orderBy: {
-            createdAt: "desc",
-          },
-
-          include: {
-            actor: {
-              select: {
-                id: true,
-                name: true,
-                email: true,
-                role: true,
-              },
-            },
-          },
-        });
-
-      return res.status(200).json({
-        status: "success",
-        message:
-          "Application events fetched successfully",
-        data: {
-          events,
-        },
-      });
-    } catch (error) {
-      console.error(
-        "GET /api/applications/:id/events ERROR:",
-        error
-      );
-
-      return res.status(500).json({
-        status: "error",
-        message:
-          "Failed to fetch application events",
-        error:
-          error instanceof Error
-            ? error.message
-            : String(error),
-      });
-    }
-  }
-);
-
-/* ============================================================
-   POST /api/applications/:id/events
-
-   Add application event.
-
-   Only schema-supported event types are accepted.
-   ============================================================ */
-
-router.post(
-  "/:id/events",
-  requireAuth,
-  requireRole("RECRUITER"),
-  async (req: AuthRequest, res: Response) => {
-    try {
-      const applicationId =
-        getParam(req.params.id);
-
-      if (
-        !applicationId ||
-        !isValidUUID(applicationId)
-      ) {
-        return res.status(400).json({
-          status: "error",
-          message: "Invalid application ID",
-        });
-      }
-
-      const {
-        type,
-        description,
-      } = req.body;
-
-      if (
-        typeof type !== "string" ||
-        !type.trim()
-      ) {
-        return res.status(400).json({
-          status: "error",
-          message: "Event type is required",
-        });
-      }
-
-      if (
-        !VALID_EVENT_TYPES.includes(
-          type as ApplicationEventType
-        )
-      ) {
-        return res.status(400).json({
-          status: "error",
-          message:
-            "Invalid application event type",
-          allowedEventTypes:
-            VALID_EVENT_TYPES,
-        });
-      }
-
-      if (
-        description !== undefined &&
-        description !== null &&
-        typeof description !== "string"
-      ) {
-        return res.status(400).json({
-          status: "error",
-          message:
-            "Event description must be a string",
-        });
-      }
-
-      const application =
-        await prisma.application.findUnique({
-          where: {
-            id: applicationId,
-          },
-        });
-
-      if (!application) {
-        return res.status(404).json({
-          status: "error",
-          message: "Application not found",
-        });
-      }
-
-      const event =
-        await prisma.applicationEvent.create({
-          data: {
-            applicationId,
-
-            actorId:
-              req.user?.userId,
-
-            type:
-              type as ApplicationEventType,
-
-            description:
-              typeof description === "string" &&
-              description.trim()
-                ? description.trim()
-                : null,
-          },
-
-          include: {
-            actor: {
-              select: {
-                id: true,
-                name: true,
-                email: true,
-                role: true,
-              },
-            },
-          },
-        });
-
-      return res.status(201).json({
-        status: "success",
-        message:
-          "Application event created successfully",
-        data: {
-          event,
-        },
-      });
-    } catch (error) {
-      console.error(
-        "POST /api/applications/:id/events ERROR:",
-        error
-      );
-
-      return res.status(500).json({
-        status: "error",
-        message:
-          "Failed to create application event",
-        error:
-          error instanceof Error
-            ? error.message
-            : String(error),
-      });
-    }
-  }
-);
-
-/* ============================================================
-   EXPORT
-   ============================================================ */
 
 export default router;

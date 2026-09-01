@@ -34,8 +34,9 @@ enum ApplicationStage {
 enum ApplicationEventType {
   APPLICATION_CREATED
   STAGE_CHANGED
+  REJECTION
+  REINSTATEMENT
   NOTE_ADDED
-
   INTERVIEWER_ASSIGNED
   INTERVIEWER_REMOVED
   FEEDBACK_ADDED
@@ -119,6 +120,8 @@ model ApplicationEvent {
   applicationId String               @db.Uuid
   actorId       String?              @db.Uuid
   type          ApplicationEventType
+  oldValue      String?
+  newValue      String?
   description   String?
   createdAt     DateTime             @default(now())
 
