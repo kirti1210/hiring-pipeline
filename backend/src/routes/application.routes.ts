@@ -1,33 +1,43 @@
-import { Router, Response, Request, NextFunction } from "express";
+import { Router, Request, Response, NextFunction } from "express";
 import { prisma } from "../config/database";
 import { requireAuth } from "../middleware/auth.middleware";
 
 const router = Router();
 
 /* ============================================================
-   LOCAL TYPES
+   TYPES
    ============================================================ */
 
-interface AuthRequest extends Request {
+type UserRole =
+  | "RECRUITER"
+  | "INTERVIEWER"
+  | "ADMIN"
+  | "CANDIDATE";
+
+type ApplicationStage =
+  | "APPLIED"
+  | "SCREENING"
+  | "INTERVIEW"
+  | "OFFER"
+  | "HIRED"
+  | "REJECTED"
+  | "WITHDRAWN";
+
+type AuthRequest = Request & {
   user?: {
     userId: string;
     email: string;
-    role: string;
+    role: UserRole;
   };
-}
+};
 
 /* ============================================================
    ROLE MIDDLEWARE
-   Kept locally so this route does not depend on
-   ../middleware/role.middleware
    ============================================================ */
 
-function requireRole(...allowedRoles: string[]) {
-  return (
-    req: AuthRequest,
-    res: Response,
-    next: NextFunction
-  ) => {
+const requireRole =
+  (...allowedRoles: UserRole[]) =>
+  (req: AuthRequest, res: Response, next: NextFunction) => {
     if (!req.user) {
       return res.status(401).json({
         status: "error",
@@ -44,79 +54,99 @@ function requireRole(...allowedRoles: string[]) {
 
     next();
   };
-}
 
 /* ============================================================
    HELPERS
    ============================================================ */
 
-function getActorId(req: AuthRequest): string {
-  if (!req.user?.userId) {
-    throw new Error("Authenticated user ID is missing");
+const isValidUUID = (value: unknown): value is string => {
+  if (typeof value !== "string") {
+    return false;
   }
 
-  return req.user.userId;
-}
-
-function getParam(value: string | string[] | undefined): string {
-  if (Array.isArray(value)) {
-    return value[0] ?? "";
-  }
-
-  return value ?? "";
-}
-
-function isValidUUID(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
     value
   );
-}
+};
 
-function isValidStage(value: string): boolean {
-  return [
-    "APPLIED",
-    "SCREENING",
-    "INTERVIEW",
-    "OFFER",
-    "HIRED",
-    "REJECTED",
-    "WITHDRAWN",
-  ].includes(value);
-}
+const getParam = (
+  value: string | string[] | undefined
+): string | undefined => {
+  if (Array.isArray(value)) {
+    return value[0];
+  }
 
-/* ============================================================
-   NORMAL PIPELINE TRANSITIONS
-   ============================================================ */
+  return value;
+};
 
-const allowedTransitions: Record<string, string> = {
-  APPLIED: "SCREENING",
-  SCREENING: "INTERVIEW",
-  INTERVIEW: "OFFER",
-  OFFER: "HIRED",
+/*
+ * IMPORTANT:
+ * WITHDRAWN is included here.
+ */
+const VALID_STAGES: ApplicationStage[] = [
+  "APPLIED",
+  "SCREENING",
+  "INTERVIEW",
+  "OFFER",
+  "HIRED",
+  "REJECTED",
+  "WITHDRAWN",
+];
+
+const isValidStage = (
+  value: unknown
+): value is ApplicationStage => {
+  return (
+    typeof value === "string" &&
+    VALID_STAGES.includes(value as ApplicationStage)
+  );
+};
+
+/*
+ * Normal pipeline transitions.
+ *
+ * REJECTED and WITHDRAWN are terminal/non-normal stages.
+ */
+const STAGE_TRANSITIONS: Record<
+  Exclude<
+    ApplicationStage,
+    "HIRED" | "REJECTED" | "WITHDRAWN"
+  >,
+  ApplicationStage[]
+> = {
+  APPLIED: ["SCREENING"],
+  SCREENING: ["INTERVIEW"],
+  INTERVIEW: ["OFFER"],
+  OFFER: ["HIRED"],
+};
+
+const canTransition = (
+  oldStage: ApplicationStage,
+  newStage: ApplicationStage
+): boolean => {
+  const allowed = STAGE_TRANSITIONS[
+    oldStage as keyof typeof STAGE_TRANSITIONS
+  ];
+
+  if (!allowed) {
+    return false;
+  }
+
+  return allowed.includes(newStage);
+};
+
+const getActorId = (req: AuthRequest): string => {
+  return req.user!.userId;
 };
 
 /* ============================================================
-   COMMON APPLICATION INCLUDE
+   APPLICATION INCLUDE
    ============================================================ */
 
 const applicationInclude = {
-  job: {
-    select: {
-      id: true,
-      title: true,
-      description: true,
-      status: true,
-    },
-  },
+  job: true,
 
-  candidate: {
-    select: {
-      id: true,
-      name: true,
-      email: true,
-      role: true,
-    },
-  },
+  candidate: true,
 
   interviewers: {
     include: {
@@ -128,9 +158,6 @@ const applicationInclude = {
           role: true,
         },
       },
-    },
-    orderBy: {
-      assignedAt: "asc" as const,
     },
   },
 
@@ -146,7 +173,7 @@ const applicationInclude = {
       },
     },
     orderBy: {
-      createdAt: "desc" as const,
+      createdAt: "asc" as const,
     },
   },
 
@@ -168,151 +195,35 @@ const applicationInclude = {
 };
 
 /* ============================================================
-   POST /api/applications
-   CREATE APPLICATION
-
-   RECRUITER / ADMIN
-   ============================================================ */
-
-router.post(
-  "/",
-  requireAuth,
-  requireRole("RECRUITER", "ADMIN"),
-  async (req: AuthRequest, res: Response) => {
-    try {
-      const {
-        jobId,
-        candidateId,
-        source,
-        notes,
-      } = req.body;
-
-      if (
-        typeof jobId !== "string" ||
-        !isValidUUID(jobId)
-      ) {
-        return res.status(400).json({
-          status: "error",
-          message: "Valid jobId is required",
-        });
-      }
-
-      if (
-        typeof candidateId !== "string" ||
-        !isValidUUID(candidateId)
-      ) {
-        return res.status(400).json({
-          status: "error",
-          message: "Valid candidateId is required",
-        });
-      }
-
-      const job = await prisma.job.findUnique({
-        where: {
-          id: jobId,
-        },
-      });
-
-      if (!job) {
-        return res.status(404).json({
-          status: "error",
-          message: "Job not found",
-        });
-      }
-
-      const candidate = await prisma.user.findUnique({
-        where: {
-          id: candidateId,
-        },
-      });
-
-      if (!candidate) {
-        return res.status(404).json({
-          status: "error",
-          message: "Candidate not found",
-        });
-      }
-
-      if (candidate.role !== "CANDIDATE") {
-        return res.status(400).json({
-          status: "error",
-          message: "Selected user is not a candidate",
-        });
-      }
-
-      const existing =
-        await prisma.application.findUnique({
-          where: {
-            jobId_candidateId: {
-              jobId,
-              candidateId,
-            },
-          },
-        });
-
-      if (existing) {
-        return res.status(409).json({
-          status: "error",
-          message:
-            "Candidate has already applied for this job",
-        });
-      }
-
-      const application =
-        await prisma.application.create({
-          data: {
-            jobId,
-            candidateId,
-            source:
-              typeof source === "string"
-                ? source.trim()
-                : null,
-            notes:
-              typeof notes === "string"
-                ? notes.trim()
-                : null,
-          },
-          include: applicationInclude,
-        });
-
-      await prisma.applicationEvent.create({
-        data: {
-          applicationId: application.id,
-          actorId: getActorId(req),
-          type: "APPLICATION_CREATED",
-          oldValue: null,
-          newValue: "APPLIED",
-          description:
-            "Application created",
-        },
-      });
-
-      return res.status(201).json({
-        status: "success",
-        message: "Application created successfully",
-        data: {
-          application,
-        },
-      });
-    } catch (error) {
-      console.error(
-        "Create application error:",
-        error
-      );
-
-      return res.status(500).json({
-        status: "error",
-        message: "Failed to create application",
-      });
-    }
-  }
-);
-
-/* ============================================================
+   PHASE 13
    GET /api/applications
-   LIST APPLICATIONS
+   Candidate Search + Filters + Sorting + Pagination
 
-   RECRUITER / ADMIN
+   RECRUITER / ADMIN ONLY
+
+   Supported query parameters:
+
+   Search:
+   ?search=rahul
+   ?candidateName=rahul
+   ?candidateEmail=gmail.com
+
+   Filters:
+   ?jobId=<uuid>
+   ?candidateId=<uuid>
+   ?stage=SCREENING
+   ?source=LINKEDIN
+
+   Sorting:
+   ?sortBy=appliedAt
+   ?sortBy=updatedAt
+   ?sortBy=stage
+   ?sortOrder=asc
+   ?sortOrder=desc
+
+   Pagination:
+   ?page=1
+   ?limit=10
    ============================================================ */
 
 router.get(
@@ -322,12 +233,85 @@ router.get(
   async (req: AuthRequest, res: Response) => {
     try {
       const {
+        search,
+        candidateName,
+        candidateEmail,
         jobId,
         candidateId,
         stage,
+        source,
+        sortBy,
+        sortOrder,
+        page,
+        limit,
       } = req.query;
 
       const where: any = {};
+
+      /* --------------------------------------------------------
+         SEARCH BY CANDIDATE NAME
+         -------------------------------------------------------- */
+
+      if (
+        typeof candidateName === "string" &&
+        candidateName.trim()
+      ) {
+        where.candidate = {
+          ...(where.candidate ?? {}),
+          name: {
+            contains: candidateName.trim(),
+            mode: "insensitive",
+          },
+        };
+      }
+
+      /* --------------------------------------------------------
+         SEARCH BY CANDIDATE EMAIL
+         -------------------------------------------------------- */
+
+      if (
+        typeof candidateEmail === "string" &&
+        candidateEmail.trim()
+      ) {
+        where.candidate = {
+          ...(where.candidate ?? {}),
+          email: {
+            contains: candidateEmail.trim(),
+            mode: "insensitive",
+          },
+        };
+      }
+
+      /* --------------------------------------------------------
+         GENERAL SEARCH
+         Searches candidate name OR candidate email
+         -------------------------------------------------------- */
+
+      if (
+        typeof search === "string" &&
+        search.trim()
+      ) {
+        where.candidate = {
+          OR: [
+            {
+              name: {
+                contains: search.trim(),
+                mode: "insensitive",
+              },
+            },
+            {
+              email: {
+                contains: search.trim(),
+                mode: "insensitive",
+              },
+            },
+          ],
+        };
+      }
+
+      /* --------------------------------------------------------
+         FILTER BY JOB
+         -------------------------------------------------------- */
 
       if (
         typeof jobId === "string" &&
@@ -336,12 +320,22 @@ router.get(
         where.jobId = jobId;
       }
 
+      /* --------------------------------------------------------
+         FILTER BY CANDIDATE
+         -------------------------------------------------------- */
+
       if (
         typeof candidateId === "string" &&
         isValidUUID(candidateId)
       ) {
         where.candidateId = candidateId;
       }
+
+      /* --------------------------------------------------------
+         FILTER BY STAGE
+
+         WITHDRAWN is explicitly supported.
+         -------------------------------------------------------- */
 
       if (
         typeof stage === "string" &&
@@ -350,20 +344,108 @@ router.get(
         where.stage = stage;
       }
 
-      const applications =
-        await prisma.application.findMany({
-          where,
-          include: applicationInclude,
-          orderBy: {
-            createdAt: "desc",
-          },
-        });
+      /* --------------------------------------------------------
+         FILTER BY SOURCE
+         -------------------------------------------------------- */
+
+      if (
+        typeof source === "string" &&
+        source.trim()
+      ) {
+        where.source = {
+          equals: source.trim(),
+          mode: "insensitive",
+        };
+      }
+
+      /* --------------------------------------------------------
+         PAGINATION
+         -------------------------------------------------------- */
+
+      let currentPage = 1;
+
+      if (
+        typeof page === "string" &&
+        Number.isInteger(Number(page)) &&
+        Number(page) > 0
+      ) {
+        currentPage = Number(page);
+      }
+
+      let pageSize = 10;
+
+      if (
+        typeof limit === "string" &&
+        Number.isInteger(Number(limit)) &&
+        Number(limit) > 0
+      ) {
+        pageSize = Math.min(Number(limit), 100);
+      }
+
+      const skip = (currentPage - 1) * pageSize;
+
+      /* --------------------------------------------------------
+         SORTING
+         -------------------------------------------------------- */
+
+      const validSortFields = [
+        "appliedAt",
+        "updatedAt",
+        "stage",
+      ];
+
+      const selectedSort =
+        typeof sortBy === "string" &&
+        validSortFields.includes(sortBy)
+          ? sortBy
+          : "appliedAt";
+
+      const selectedSortOrder =
+        sortOrder === "asc" ? "asc" : "desc";
+
+      const orderBy: any = {
+        [selectedSort]: selectedSortOrder,
+      };
+
+      /* --------------------------------------------------------
+         DATABASE QUERY
+
+         IMPORTANT:
+         Filtering and pagination happen in Prisma/database.
+         -------------------------------------------------------- */
+
+      const [applications, totalCount] =
+        await prisma.$transaction([
+          prisma.application.findMany({
+            where,
+            include: applicationInclude,
+            orderBy,
+            skip,
+            take: pageSize,
+          }),
+
+          prisma.application.count({
+            where,
+          }),
+        ]);
+
+      const totalPages =
+        Math.ceil(totalCount / pageSize);
 
       return res.json({
         status: "success",
         data: {
           applications,
-          count: applications.length,
+          pagination: {
+            page: currentPage,
+            limit: pageSize,
+            totalCount,
+            totalPages,
+            hasNextPage:
+              currentPage < totalPages,
+            hasPreviousPage:
+              currentPage > 1,
+          },
         },
       });
     } catch (error) {
@@ -383,8 +465,9 @@ router.get(
 /* ============================================================
    GET /api/applications/interviewer/dashboard
 
-   IMPORTANT:
-   This route MUST appear before /:id
+   INTERVIEWER ONLY
+
+   Shows applications assigned to the current interviewer.
    ============================================================ */
 
 router.get(
@@ -403,36 +486,7 @@ router.get(
 
           include: {
             application: {
-              include: {
-                job: {
-                  select: {
-                    id: true,
-                    title: true,
-                    status: true,
-                  },
-                },
-
-                candidate: {
-                  select: {
-                    id: true,
-                    name: true,
-                    email: true,
-                  },
-                },
-
-                feedback: {
-                  where: {
-                    interviewerId,
-                  },
-
-                  select: {
-                    id: true,
-                    rating: true,
-                    comments: true,
-                    createdAt: true,
-                  },
-                },
-              },
+              include: applicationInclude,
             },
           },
 
@@ -441,17 +495,16 @@ router.get(
           },
         });
 
-      const applications =
-        assignments.map(
-          (assignment) => ({
-            assignmentId:
-              assignment.applicationId,
-            assignedAt:
-              assignment.assignedAt,
-            application:
-              assignment.application,
-          })
-        );
+      const applications = assignments.map(
+        (assignment) => ({
+          assignmentId:
+            assignment.applicationId,
+          assignedAt:
+            assignment.assignedAt,
+          application:
+            assignment.application,
+        })
+      );
 
       return res.json({
         status: "success",
@@ -480,9 +533,6 @@ router.get(
    GET /api/applications/interviewer/assigned
 
    INTERVIEWER ONLY
-
-   Shows ONLY applications assigned to the
-   currently authenticated interviewer.
    ============================================================ */
 
 router.get(
@@ -510,11 +560,10 @@ router.get(
           },
         });
 
-      const applications =
-        assignments.map(
-          (assignment) =>
-            assignment.application
-        );
+      const applications = assignments.map(
+        (assignment) =>
+          assignment.application
+      );
 
       return res.json({
         status: "success",
@@ -543,8 +592,11 @@ router.get(
 
    IMMUTABLE APPLICATION TIMELINE
 
-   Recruiter/Admin can view history.
-   Interviewer can view history ONLY when assigned.
+   Recruiter/Admin:
+   Can view all application history.
+
+   Interviewer:
+   Can view history only if assigned.
    ============================================================ */
 
 router.get(
@@ -654,6 +706,115 @@ router.get(
 );
 
 /* ============================================================
+   GET /api/applications/:id/feedback
+
+   RECRUITER / ADMIN
+   INTERVIEWER only if assigned
+   ============================================================ */
+
+router.get(
+  "/:id/feedback",
+  requireAuth,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const id = getParam(req.params.id);
+
+      if (!id || !isValidUUID(id)) {
+        return res.status(400).json({
+          status: "error",
+          message: "Invalid application ID",
+        });
+      }
+
+      const application =
+        await prisma.application.findUnique({
+          where: {
+            id,
+          },
+        });
+
+      if (!application) {
+        return res.status(404).json({
+          status: "error",
+          message: "Application not found",
+        });
+      }
+
+      if (req.user?.role === "INTERVIEWER") {
+        const assignment =
+          await prisma.applicationInterviewer.findUnique(
+            {
+              where: {
+                applicationId_interviewerId: {
+                  applicationId: id,
+                  interviewerId: getActorId(req),
+                },
+              },
+            }
+          );
+
+        if (!assignment) {
+          return res.status(403).json({
+            status: "error",
+            message:
+              "You are not assigned to this application",
+          });
+        }
+      } else if (
+        req.user?.role !== "RECRUITER" &&
+        req.user?.role !== "ADMIN"
+      ) {
+        return res.status(403).json({
+          status: "error",
+          message:
+            "You do not have access to this feedback",
+        });
+      }
+
+      const feedback =
+        await prisma.feedback.findMany({
+          where: {
+            applicationId: id,
+          },
+
+          include: {
+            interviewer: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                role: true,
+              },
+            },
+          },
+
+          orderBy: {
+            createdAt: "asc",
+          },
+        });
+
+      return res.json({
+        status: "success",
+        data: {
+          feedback,
+          count: feedback.length,
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Get feedback error:",
+        error
+      );
+
+      return res.status(500).json({
+        status: "error",
+        message: "Failed to fetch feedback",
+      });
+    }
+  }
+);
+
+/* ============================================================
    GET /api/applications/:id
 
    RECRUITER / ADMIN
@@ -741,6 +902,143 @@ router.get(
 );
 
 /* ============================================================
+   POST /api/applications
+
+   CREATE APPLICATION
+
+   RECRUITER / ADMIN
+   ============================================================ */
+
+router.post(
+  "/",
+  requireAuth,
+  requireRole("RECRUITER", "ADMIN"),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const {
+        jobId,
+        candidateId,
+        source,
+        notes,
+      } = req.body;
+
+      if (
+        !jobId ||
+        !candidateId
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message:
+            "jobId and candidateId are required",
+        });
+      }
+
+      if (
+        !isValidUUID(jobId) ||
+        !isValidUUID(candidateId)
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message:
+            "Invalid jobId or candidateId",
+        });
+      }
+
+      const job =
+        await prisma.job.findUnique({
+          where: {
+            id: jobId,
+          },
+        });
+
+      if (!job) {
+        return res.status(404).json({
+          status: "error",
+          message: "Job not found",
+        });
+      }
+
+      const candidate =
+        await prisma.user.findUnique({
+          where: {
+            id: candidateId,
+          },
+        });
+
+      if (!candidate) {
+        return res.status(404).json({
+          status: "error",
+          message: "Candidate not found",
+        });
+      }
+
+      const existing =
+        await prisma.application.findFirst({
+          where: {
+            jobId,
+            candidateId,
+          },
+        });
+
+      if (existing) {
+        return res.status(409).json({
+          status: "error",
+          message:
+            "Candidate has already applied to this job",
+        });
+      }
+
+      const application =
+        await prisma.application.create({
+          data: {
+            jobId,
+            candidateId,
+            source:
+              typeof source === "string"
+                ? source
+                : undefined,
+            notes:
+              typeof notes === "string"
+                ? notes
+                : undefined,
+            stage: "APPLIED",
+          },
+          include: applicationInclude,
+        });
+
+      await prisma.applicationEvent.create({
+        data: {
+          applicationId: application.id,
+          actorId: getActorId(req),
+          type: "APPLICATION_CREATED",
+          oldValue: null,
+          newValue: "APPLIED",
+        },
+      });
+
+      return res.status(201).json({
+        status: "success",
+        message: "Application created successfully",
+        data: {
+          application,
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Create application error:",
+        error
+      );
+
+      return res.status(500).json({
+        status: "error",
+        message:
+          "Failed to create application",
+      });
+    }
+  }
+);
+
+/* ============================================================
    PATCH /api/applications/:id
 
    EDIT APPLICATION DETAILS
@@ -763,14 +1061,14 @@ router.patch(
         });
       }
 
-      const application =
+      const existing =
         await prisma.application.findUnique({
           where: {
             id,
           },
         });
 
-      if (!application) {
+      if (!existing) {
         return res.status(404).json({
           status: "error",
           message: "Application not found",
@@ -782,87 +1080,33 @@ router.patch(
         notes,
       } = req.body;
 
-      if (
-        source !== undefined &&
-        source !== null &&
-        typeof source !== "string"
-      ) {
-        return res.status(400).json({
-          status: "error",
-          message:
-            "source must be a string or null",
-        });
-      }
-
-      if (
-        notes !== undefined &&
-        notes !== null &&
-        typeof notes !== "string"
-      ) {
-        return res.status(400).json({
-          status: "error",
-          message:
-            "notes must be a string or null",
-        });
-      }
-
-      const updated =
+      const application =
         await prisma.application.update({
           where: {
             id,
           },
-
           data: {
-            ...(source !== undefined
-              ? {
-                  source:
-                    source === null
-                      ? null
-                      : source.trim(),
-                }
+            ...(typeof source === "string"
+              ? { source }
               : {}),
-
-            ...(notes !== undefined
-              ? {
-                  notes:
-                    notes === null
-                      ? null
-                      : notes.trim(),
-                }
+            ...(typeof notes === "string"
+              ? { notes }
               : {}),
           },
-
           include: applicationInclude,
         });
-
-      if (notes !== undefined) {
-        await prisma.applicationEvent.create({
-          data: {
-            applicationId: id,
-            actorId: getActorId(req),
-            type: "NOTE_ADDED",
-            oldValue: application.notes,
-            newValue:
-              notes === null
-                ? null
-                : notes.trim(),
-            description:
-              "Application notes updated",
-          },
-        });
-      }
 
       return res.json({
         status: "success",
         message:
           "Application updated successfully",
         data: {
-          application: updated,
+          application,
         },
       });
     } catch (error) {
       console.error(
-        "Update application error:",
+        "Edit application error:",
         error
       );
 
@@ -884,6 +1128,8 @@ router.patch(
    SCREENING -> INTERVIEW
    INTERVIEW -> OFFER
    OFFER -> HIRED
+
+   REJECTED / WITHDRAWN cannot use this route.
    ============================================================ */
 
 router.patch(
@@ -902,10 +1148,7 @@ router.patch(
         });
       }
 
-      if (
-        typeof stage !== "string" ||
-        !isValidStage(stage)
-      ) {
+      if (!isValidStage(stage)) {
         return res.status(400).json({
           status: "error",
           message: "Invalid application stage",
@@ -926,27 +1169,26 @@ router.patch(
         });
       }
 
+      const oldStage =
+        application.stage as ApplicationStage;
+
       if (
-        application.stage === "REJECTED" ||
-        application.stage === "WITHDRAWN"
+        oldStage === "REJECTED" ||
+        oldStage === "WITHDRAWN"
       ) {
         return res.status(400).json({
           status: "error",
           message:
-            "Rejected or withdrawn applications must use the appropriate workflow",
+            "Rejected or withdrawn applications must be reinstated before changing stage",
         });
       }
 
-      const expectedNext =
-        allowedTransitions[
-          application.stage
-        ];
-
-      if (expectedNext !== stage) {
+      if (
+        !canTransition(oldStage, stage)
+      ) {
         return res.status(400).json({
           status: "error",
-          message:
-            `Invalid stage transition: ${application.stage} -> ${stage}`,
+          message: `Invalid stage transition: ${oldStage} -> ${stage}`,
         });
       }
 
@@ -955,10 +1197,10 @@ router.patch(
           where: {
             id,
           },
-
           data: {
-            stage: stage as any,
+            stage,
           },
+          include: applicationInclude,
         });
 
       await prisma.applicationEvent.create({
@@ -966,17 +1208,14 @@ router.patch(
           applicationId: id,
           actorId: getActorId(req),
           type: "STAGE_CHANGED",
-          oldValue: application.stage,
+          oldValue: oldStage,
           newValue: stage,
-          description:
-            `Application stage changed from ${application.stage} to ${stage}`,
         },
       });
 
       return res.json({
         status: "success",
-        message:
-          "Application stage updated successfully",
+        message: "Application stage updated",
         data: {
           application: updated,
         },
@@ -999,9 +1238,9 @@ router.patch(
 /* ============================================================
    PATCH /api/applications/:id/reject
 
-   REJECT APPLICATION
+   RECRUITER / ADMIN
 
-   Stores rejectedFromStage.
+   Saves rejectedFromStage.
    ============================================================ */
 
 router.patch(
@@ -1033,31 +1272,40 @@ router.patch(
         });
       }
 
+      const currentStage =
+        application.stage as ApplicationStage;
+
       if (
-        application.stage === "REJECTED" ||
-        application.stage === "WITHDRAWN"
+        currentStage === "REJECTED"
       ) {
         return res.status(400).json({
           status: "error",
           message:
-            "Application cannot be rejected from its current stage",
+            "Application is already rejected",
         });
       }
 
-      const previousStage =
-        application.stage;
+      if (
+        currentStage === "WITHDRAWN"
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message:
+            "Withdrawn application cannot be rejected",
+        });
+      }
 
       const updated =
         await prisma.application.update({
           where: {
             id,
           },
-
           data: {
             stage: "REJECTED",
             rejectedFromStage:
-              previousStage,
+              currentStage,
           },
+          include: applicationInclude,
         });
 
       await prisma.applicationEvent.create({
@@ -1065,10 +1313,8 @@ router.patch(
           applicationId: id,
           actorId: getActorId(req),
           type: "REJECTION",
-          oldValue: previousStage,
+          oldValue: currentStage,
           newValue: "REJECTED",
-          description:
-            `Application rejected from ${previousStage}`,
         },
       });
 
@@ -1098,9 +1344,9 @@ router.patch(
 /* ============================================================
    PATCH /api/applications/:id/reinstate
 
-   REINSTATE APPLICATION
+   RECRUITER / ADMIN
 
-   Returns to exact rejectedFromStage.
+   Restores application to rejectedFromStage.
    ============================================================ */
 
 router.patch(
@@ -1142,29 +1388,29 @@ router.patch(
         });
       }
 
-      if (
-        !application.rejectedFromStage
-      ) {
+      const previousStage =
+        application.rejectedFromStage as
+          | ApplicationStage
+          | null;
+
+      if (!previousStage) {
         return res.status(400).json({
-          status: "400",
+          status: "error",
           message:
-            "Original application stage is unavailable",
+            "Original application stage is not available",
         });
       }
-
-      const previousStage =
-        application.rejectedFromStage;
 
       const updated =
         await prisma.application.update({
           where: {
             id,
           },
-
           data: {
             stage: previousStage,
             rejectedFromStage: null,
           },
+          include: applicationInclude,
         });
 
       await prisma.applicationEvent.create({
@@ -1174,8 +1420,6 @@ router.patch(
           type: "REINSTATEMENT",
           oldValue: "REJECTED",
           newValue: previousStage,
-          description:
-            `Application reinstated to ${previousStage}`,
         },
       });
 
@@ -1209,8 +1453,7 @@ router.patch(
 
    RECRUITER / ADMIN
 
-   Multiple interviewers are allowed.
-   One interviewer can handle multiple applications.
+   Multiple interviewers are supported.
    ============================================================ */
 
 router.post(
@@ -1232,7 +1475,7 @@ router.post(
       }
 
       if (
-        typeof interviewerId !== "string" ||
+        !interviewerId ||
         !isValidUUID(interviewerId)
       ) {
         return res.status(400).json({
@@ -1296,30 +1539,28 @@ router.post(
         return res.status(409).json({
           status: "error",
           message:
-            "Interviewer is already assigned to this application",
+            "Interviewer is already assigned",
         });
       }
 
       const assignment =
-        await prisma.applicationInterviewer.create(
-          {
-            data: {
-              applicationId: id,
-              interviewerId,
-            },
+        await prisma.applicationInterviewer.create({
+          data: {
+            applicationId: id,
+            interviewerId,
+          },
 
-            include: {
-              interviewer: {
-                select: {
-                  id: true,
-                  name: true,
-                  email: true,
-                  role: true,
-                },
+          include: {
+            interviewer: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                role: true,
               },
             },
-          }
-        );
+          },
+        });
 
       await prisma.applicationEvent.create({
         data: {
@@ -1328,8 +1569,6 @@ router.post(
           type: "INTERVIEWER_ASSIGNED",
           oldValue: null,
           newValue: interviewerId,
-          description:
-            `Interviewer ${interviewer.name} assigned`,
         },
       });
 
@@ -1374,21 +1613,16 @@ router.delete(
       const interviewerId =
         getParam(req.params.interviewerId);
 
-      if (!id || !isValidUUID(id)) {
-        return res.status(400).json({
-          status: "error",
-          message: "Invalid application ID",
-        });
-      }
-
       if (
+        !id ||
+        !isValidUUID(id) ||
         !interviewerId ||
         !isValidUUID(interviewerId)
       ) {
         return res.status(400).json({
           status: "error",
           message:
-            "Invalid interviewer ID",
+            "Invalid application or interviewer ID",
         });
       }
 
@@ -1428,8 +1662,6 @@ router.delete(
           type: "INTERVIEWER_REMOVED",
           oldValue: interviewerId,
           newValue: null,
-          description:
-            "Interviewer removed",
         },
       });
 
@@ -1454,126 +1686,16 @@ router.delete(
 );
 
 /* ============================================================
-   GET /api/applications/:id/feedback
-
-   RECRUITER / ADMIN
-   INTERVIEWER only if assigned
-   ============================================================ */
-
-router.get(
-  "/:id/feedback",
-  requireAuth,
-  async (req: AuthRequest, res: Response) => {
-    try {
-      const id = getParam(req.params.id);
-
-      if (!id || !isValidUUID(id)) {
-        return res.status(400).json({
-          status: "error",
-          message: "Invalid application ID",
-        });
-      }
-
-      const application =
-        await prisma.application.findUnique({
-          where: {
-            id,
-          },
-        });
-
-      if (!application) {
-        return res.status(404).json({
-          status: "error",
-          message: "Application not found",
-        });
-      }
-
-      if (req.user?.role === "INTERVIEWER") {
-        const assignment =
-          await prisma.applicationInterviewer.findUnique(
-            {
-              where: {
-                applicationId_interviewerId: {
-                  applicationId: id,
-                  interviewerId:
-                    getActorId(req),
-                },
-              },
-            }
-          );
-
-        if (!assignment) {
-          return res.status(403).json({
-            status: "error",
-            message:
-              "You are not assigned to this application",
-          });
-        }
-      } else if (
-        req.user?.role !== "RECRUITER" &&
-        req.user?.role !== "ADMIN"
-      ) {
-        return res.status(403).json({
-          status: "error",
-          message:
-            "You do not have access to this feedback",
-        });
-      }
-
-      const feedback =
-        await prisma.feedback.findMany({
-          where: {
-            applicationId: id,
-          },
-
-          include: {
-            interviewer: {
-              select: {
-                id: true,
-                name: true,
-                email: true,
-                role: true,
-              },
-            },
-          },
-
-          orderBy: {
-            createdAt: "asc",
-          },
-        });
-
-      return res.json({
-        status: "success",
-        data: {
-          feedback,
-          count: feedback.length,
-        },
-      });
-    } catch (error) {
-      console.error(
-        "Get feedback error:",
-        error
-      );
-
-      return res.status(500).json({
-        status: "error",
-        message:
-          "Failed to fetch feedback",
-      });
-    }
-  }
-);
-
-/* ============================================================
    POST /api/applications/:id/feedback
 
    INTERVIEWER ONLY
 
-   SECURITY:
+   Rules:
    - Interviewer must be assigned.
-   - Feedback can be submitted only once.
-   - No update.
-   - No delete.
+   - Feedback can only be submitted once
+     by a particular interviewer.
+   - No update endpoint.
+   - No delete endpoint.
    ============================================================ */
 
 router.post(
@@ -1605,7 +1727,7 @@ router.post(
         return res.status(400).json({
           status: "error",
           message:
-            "rating must be an integer between 1 and 5",
+            "Rating must be an integer between 1 and 5",
         });
       }
 
@@ -1616,9 +1738,12 @@ router.post(
         return res.status(400).json({
           status: "error",
           message:
-            "comments are required",
+            "Feedback comments are required",
         });
       }
+
+      const interviewerId =
+        getActorId(req);
 
       const application =
         await prisma.application.findUnique({
@@ -1634,12 +1759,8 @@ router.post(
         });
       }
 
-      const interviewerId =
-        getActorId(req);
-
       /* --------------------------------------------------------
-         SECURITY:
-         Interviewer MUST be assigned.
+         VERIFY ASSIGNMENT
          -------------------------------------------------------- */
 
       const assignment =
@@ -1663,17 +1784,16 @@ router.post(
       }
 
       /* --------------------------------------------------------
-         IMMUTABILITY:
-         Feedback can be submitted only once.
+         IMMUTABLE FEEDBACK
+
+         One feedback per interviewer per application.
          -------------------------------------------------------- */
 
       const existingFeedback =
-        await prisma.feedback.findUnique({
+        await prisma.feedback.findFirst({
           where: {
-            applicationId_interviewerId: {
-              applicationId: id,
-              interviewerId,
-            },
+            applicationId: id,
+            interviewerId,
           },
         });
 
@@ -1681,13 +1801,9 @@ router.post(
         return res.status(409).json({
           status: "error",
           message:
-            "Feedback has already been submitted for this application. Feedback cannot be edited or resubmitted.",
+            "Feedback has already been submitted and cannot be edited",
         });
       }
-
-      /* --------------------------------------------------------
-         CREATE FEEDBACK
-         -------------------------------------------------------- */
 
       const feedback =
         await prisma.feedback.create({
@@ -1710,20 +1826,13 @@ router.post(
           },
         });
 
-      /* --------------------------------------------------------
-         IMMUTABLE HISTORY EVENT
-         -------------------------------------------------------- */
-
       await prisma.applicationEvent.create({
         data: {
           applicationId: id,
           actorId: interviewerId,
           type: "FEEDBACK_ADDED",
           oldValue: null,
-          newValue:
-            `rating=${rating}`,
-          description:
-            "Interview feedback added",
+          newValue: feedback.id,
         },
       });
 
@@ -1751,15 +1860,16 @@ router.post(
 );
 
 /* ============================================================
-   IMPORTANT IMMUTABILITY RULE
+   IMPORTANT
 
-   There are intentionally NO routes such as:
+   There are intentionally NO:
 
-   PATCH /api/applications/:id/history/:eventId
-   DELETE /api/applications/:id/history/:eventId
+   PATCH /:id/feedback
+   DELETE /:id/feedback
 
-   ApplicationEvent records cannot be edited/deleted
-   through the API.
+   routes.
+
+   This makes interviewer feedback immutable.
    ============================================================ */
 
 export default router;
