@@ -1,4 +1,4 @@
-import { Router, Request, Response, NextFunction } from "express";
+﻿import { Router, Request, Response, NextFunction } from "express";
 import { prisma } from "../config/database";
 import { requireAuth } from "../middleware/auth.middleware";
 
@@ -1871,5 +1871,365 @@ router.post(
 
    This makes interviewer feedback immutable.
    ============================================================ */
+
+/* ============================================================
+   PHASE 14 — BULK CANDIDATE ACTIONS
+   ============================================================ */
+
+/*
+ * Bulk advance applications.
+ *
+ * Each application is validated independently.
+ * One failure does not stop the remaining applications.
+ */
+router.patch(
+  "/bulk/advance",
+  requireAuth,
+  requireRole("RECRUITER"),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const { applicationIds } = req.body;
+
+      if (
+        !Array.isArray(applicationIds) ||
+        applicationIds.length === 0
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message:
+            "applicationIds must be a non-empty array",
+        });
+      }
+
+      const results: Array<{
+        applicationId: string;
+        success: boolean;
+        previousStage?: ApplicationStage;
+        newStage?: ApplicationStage;
+        reason?: string;
+      }> = [];
+
+      for (const applicationId of applicationIds) {
+        if (!isValidUUID(applicationId)) {
+          results.push({
+            applicationId: String(applicationId),
+            success: false,
+            reason: "Invalid application ID",
+          });
+          continue;
+        }
+
+        try {
+          const result =
+            await prisma.$transaction(async (tx) => {
+              const application =
+                await tx.application.findUnique({
+                  where: {
+                    id: applicationId,
+                  },
+                });
+
+              if (!application) {
+                throw new Error(
+                  "Application not found"
+                );
+              }
+
+              const previousStage =
+                application.stage as ApplicationStage;
+
+              const nextStage =
+                STAGE_TRANSITIONS[
+                  previousStage as keyof typeof STAGE_TRANSITIONS
+                ]?.[0];
+
+              if (!nextStage) {
+                throw new Error(
+                  `Application cannot be advanced from ${previousStage}`
+                );
+              }
+
+              const updatedApplication =
+                await tx.application.update({
+                  where: {
+                    id: applicationId,
+                  },
+                  data: {
+                    stage: nextStage,
+                  },
+                });
+
+              await tx.applicationEvent.create({
+                data: {
+                  applicationId,
+                  actorId: getActorId(req),
+                  type: "STAGE_CHANGED",
+                  oldValue: previousStage,
+                  newValue: nextStage,
+                },
+              });
+
+              return {
+                previousStage,
+                newStage:
+                  updatedApplication.stage as ApplicationStage,
+              };
+            });
+
+          results.push({
+            applicationId,
+            success: true,
+            previousStage: result.previousStage,
+            newStage: result.newStage,
+          });
+        } catch (error) {
+          const reason =
+            error instanceof Error
+              ? error.message
+              : "Failed to advance application";
+
+          let previousStage:
+            | ApplicationStage
+            | undefined;
+
+          try {
+            const application =
+              await prisma.application.findUnique({
+                where: {
+                  id: applicationId,
+                },
+                select: {
+                  stage: true,
+                },
+              });
+
+            if (application) {
+              previousStage =
+                application.stage as ApplicationStage;
+            }
+          } catch {
+            // Preserve the original failure reason.
+          }
+
+          results.push({
+            applicationId,
+            success: false,
+            previousStage,
+            reason,
+          });
+        }
+      }
+
+      const successful =
+        results.filter(
+          (result) => result.success
+        ).length;
+
+      return res.status(200).json({
+        status: "success",
+        message: "Bulk advance completed",
+        data: {
+          results,
+          summary: {
+            total: results.length,
+            successful,
+            failed:
+              results.length - successful,
+          },
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Bulk advance error:",
+        error
+      );
+
+      return res.status(500).json({
+        status: "error",
+        message:
+          "Failed to process bulk advance",
+      });
+    }
+  }
+);
+
+/*
+ * Bulk reject applications.
+ *
+ * Each application is validated independently.
+ * One failure does not stop the remaining applications.
+ */
+router.patch(
+  "/bulk/reject",
+  requireAuth,
+  requireRole("RECRUITER"),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const { applicationIds } = req.body;
+
+      if (
+        !Array.isArray(applicationIds) ||
+        applicationIds.length === 0
+      ) {
+        return res.status(400).json({
+          status: "error",
+          message:
+            "applicationIds must be a non-empty array",
+        });
+      }
+
+      const results: Array<{
+        applicationId: string;
+        success: boolean;
+        previousStage?: ApplicationStage;
+        newStage?: ApplicationStage;
+        reason?: string;
+      }> = [];
+
+      for (const applicationId of applicationIds) {
+        if (!isValidUUID(applicationId)) {
+          results.push({
+            applicationId: String(applicationId),
+            success: false,
+            reason: "Invalid application ID",
+          });
+          continue;
+        }
+
+        try {
+          const result =
+            await prisma.$transaction(async (tx) => {
+              const application =
+                await tx.application.findUnique({
+                  where: {
+                    id: applicationId,
+                  },
+                });
+
+              if (!application) {
+                throw new Error(
+                  "Application not found"
+                );
+              }
+
+              const previousStage =
+                application.stage as ApplicationStage;
+
+              if (
+                previousStage === "HIRED" ||
+                previousStage === "REJECTED" ||
+                previousStage === "WITHDRAWN"
+              ) {
+                throw new Error(
+                  `Application cannot be rejected from ${previousStage}`
+                );
+              }
+
+              const updatedApplication =
+                await tx.application.update({
+                  where: {
+                    id: applicationId,
+                  },
+                  data: {
+                    stage: "REJECTED",
+                    rejectedFromStage:
+                      previousStage,
+                  },
+                });
+
+              await tx.applicationEvent.create({
+                data: {
+                  applicationId,
+                  actorId: getActorId(req),
+                  type: "REJECTION",
+                  oldValue: previousStage,
+                  newValue: "REJECTED",
+                },
+              });
+
+              return {
+                previousStage,
+                newStage:
+                  updatedApplication.stage as ApplicationStage,
+              };
+            });
+
+          results.push({
+            applicationId,
+            success: true,
+            previousStage: result.previousStage,
+            newStage: result.newStage,
+          });
+        } catch (error) {
+          const reason =
+            error instanceof Error
+              ? error.message
+              : "Failed to reject application";
+
+          let previousStage:
+            | ApplicationStage
+            | undefined;
+
+          try {
+            const application =
+              await prisma.application.findUnique({
+                where: {
+                  id: applicationId,
+                },
+                select: {
+                  stage: true,
+                },
+              });
+
+            if (application) {
+              previousStage =
+                application.stage as ApplicationStage;
+            }
+          } catch {
+            // Preserve the original failure reason.
+          }
+
+          results.push({
+            applicationId,
+            success: false,
+            previousStage,
+            reason,
+          });
+        }
+      }
+
+      const successful =
+        results.filter(
+          (result) => result.success
+        ).length;
+
+      return res.status(200).json({
+        status: "success",
+        message: "Bulk reject completed",
+        data: {
+          results,
+          summary: {
+            total: results.length,
+            successful,
+            failed:
+              results.length - successful,
+          },
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Bulk reject error:",
+        error
+      );
+
+      return res.status(500).json({
+        status: "error",
+        message:
+          "Failed to process bulk reject",
+      });
+    }
+  }
+);
+
 
 export default router;
