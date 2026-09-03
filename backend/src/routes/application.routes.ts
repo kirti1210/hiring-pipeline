@@ -2232,4 +2232,231 @@ router.patch(
 );
 
 
+/* ============================================================
+   PHASE 15 - CSV EXPORT
+   ============================================================ */
+
+/*
+ * Escape a value for CSV output.
+ *
+ * Values containing commas, quotes, or newlines are wrapped
+ * in double quotes, and embedded quotes are doubled.
+ */
+function escapeCsvValue(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  const stringValue = String(value);
+
+  if (
+    stringValue.includes(",") ||
+    stringValue.includes('"') ||
+    stringValue.includes("\n") ||
+    stringValue.includes("\r")
+  ) {
+    return `"${stringValue.replace(/"/g, '""')}"`;
+  }
+
+  return stringValue;
+}
+
+router.get(
+  "/export/csv",
+  requireAuth,
+  requireRole("RECRUITER"),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const {
+        search,
+        candidateName,
+        candidateEmail,
+        jobId,
+        candidateId,
+        stage,
+        source,
+        sortBy = "appliedAt",
+        sortOrder = "desc",
+      } = req.query;
+
+      const where: any = {};
+
+      const andConditions: any[] = [];
+
+      if (search) {
+        const searchValue = String(search);
+
+        andConditions.push({
+          OR: [
+            {
+              candidate: {
+                name: {
+                  contains: searchValue,
+                  mode: "insensitive",
+                },
+              },
+            },
+            {
+              candidate: {
+                email: {
+                  contains: searchValue,
+                  mode: "insensitive",
+                },
+              },
+            },
+            {
+              job: {
+                title: {
+                  contains: searchValue,
+                  mode: "insensitive",
+                },
+              },
+            },
+          ],
+        });
+      }
+
+      if (candidateName) {
+        andConditions.push({
+          candidate: {
+            name: {
+              contains: String(candidateName),
+              mode: "insensitive",
+            },
+          },
+        });
+      }
+
+      if (candidateEmail) {
+        andConditions.push({
+          candidate: {
+            email: {
+              contains: String(candidateEmail),
+              mode: "insensitive",
+            },
+          },
+        });
+      }
+
+      if (jobId) {
+        andConditions.push({
+          jobId: String(jobId),
+        });
+      }
+
+      if (candidateId) {
+        andConditions.push({
+          candidateId: String(candidateId),
+        });
+      }
+
+      if (stage) {
+        andConditions.push({
+          stage: String(stage).toUpperCase(),
+        });
+      }
+
+      if (source) {
+        andConditions.push({
+          source: {
+            equals: String(source),
+            mode: "insensitive",
+          },
+        });
+      }
+
+      if (andConditions.length > 0) {
+        where.AND = andConditions;
+      }
+
+      const allowedSortFields = [
+        "appliedAt",
+        "updatedAt",
+        "stage",
+      ];
+
+      const requestedSortField = String(sortBy);
+
+      const orderByField = allowedSortFields.includes(
+        requestedSortField
+      )
+        ? requestedSortField
+        : "appliedAt";
+
+      const orderDirection =
+        String(sortOrder).toLowerCase() === "asc"
+          ? "asc"
+          : "desc";
+
+      const applications =
+        await prisma.application.findMany({
+          where,
+          orderBy: {
+            [orderByField]: orderDirection,
+          },
+          include: {
+            candidate: true,
+            job: true,
+          },
+        });
+
+      const headers = [
+        "Candidate Name",
+        "Candidate Email",
+        "Job",
+        "Stage",
+        "Source",
+        "Applied At",
+        "Updated At",
+      ];
+
+      const rows = applications.map(
+        (application) => [
+          application.candidate.name,
+          application.candidate.email,
+          application.job.title,
+          application.stage,
+          application.source ?? "",
+          application.appliedAt.toISOString(),
+          application.updatedAt.toISOString(),
+        ]
+      );
+
+      const csv = [
+        headers.map(escapeCsvValue).join(","),
+        ...rows.map((row) =>
+          row.map(escapeCsvValue).join(",")
+        ),
+      ].join("\r\n");
+
+      const filename = `pipeline-export-${new Date()
+        .toISOString()
+        .slice(0, 10)}.csv`;
+
+      res.setHeader(
+        "Content-Type",
+        "text/csv; charset=utf-8"
+      );
+
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${filename}"`
+      );
+
+      return res.status(200).send(csv);
+    } catch (error) {
+      console.error(
+        "CSV export error:",
+        error
+      );
+
+      return res.status(500).json({
+        status: "error",
+        message:
+          "Failed to export applications as CSV",
+      });
+    }
+  }
+);
+
 export default router;
