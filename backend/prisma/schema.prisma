@@ -85,17 +85,18 @@ model Application {
 
   rejectedFromStage ApplicationStage?
 
-  source      String?
-  notes       String?
-  appliedAt   DateTime         @default(now())
-  createdAt   DateTime         @default(now())
-  updatedAt   DateTime         @updatedAt
+  source    String?
+  notes     String?
+  appliedAt DateTime @default(now())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  job          Job                      @relation(fields: [jobId], references: [id])
-  candidate    User                     @relation("CandidateApplications", fields: [candidateId], references: [id])
-  interviewers ApplicationInterviewer[]
-  events       ApplicationEvent[]
-  feedback     Feedback[]
+  job             Job                      @relation(fields: [jobId], references: [id])
+  candidate       User                     @relation("CandidateApplications", fields: [candidateId], references: [id])
+  interviewers    ApplicationInterviewer[]
+  events          ApplicationEvent[]
+  feedback        Feedback[]
+  alertDismissals AlertDismissal[]
 
   @@unique([jobId, candidateId])
   @@index([jobId])
@@ -131,6 +132,7 @@ model ApplicationEvent {
   @@index([applicationId])
   @@index([actorId])
   @@index([type])
+  @@index([createdAt])
 }
 
 model Feedback {
@@ -151,10 +153,17 @@ model Feedback {
 }
 
 model AlertDismissal {
-  id     String @id @default(uuid()) @db.Uuid
-  userId String @db.Uuid
+  id            String           @id @default(uuid()) @db.Uuid
+  userId        String           @db.Uuid
+  applicationId String           @db.Uuid
+  stage         ApplicationStage
+  dismissedAt   DateTime         @default(now())
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
 
+  @@unique([userId, applicationId, stage])
   @@index([userId])
+  @@index([applicationId])
+  @@index([stage])
 }

@@ -3,6 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 
 import authRoutes from "./routes/auth.routes";
+import alertsRoutes from "./routes/alerts.routes";
 import applicationRoutes from "./routes/application.routes";
 import jobRoutes from "./routes/job.routes";
 import dashboardRoutes from "./routes/dashboard.routes";
@@ -42,6 +43,7 @@ app.get("/api/health", (_req, res) => {
 ========================= */
 
 app.use("/api/auth", authRoutes);
+app.use("/api/alerts", alertsRoutes);
 
 app.use("/api/jobs", jobRoutes);
 
