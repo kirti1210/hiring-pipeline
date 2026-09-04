@@ -5,6 +5,7 @@ import dotenv from "dotenv";
 import authRoutes from "./routes/auth.routes";
 import applicationRoutes from "./routes/application.routes";
 import jobRoutes from "./routes/job.routes";
+import dashboardRoutes from "./routes/dashboard.routes";
 
 dotenv.config();
 
@@ -45,6 +46,8 @@ app.use("/api/auth", authRoutes);
 app.use("/api/jobs", jobRoutes);
 
 app.use("/api/applications", applicationRoutes);
+
+app.use("/api/dashboard", dashboardRoutes);
 
 /* =========================
    404 HANDLER
