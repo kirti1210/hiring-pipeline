@@ -36,26 +36,36 @@ interface DashboardResponse {
   message?: string;
 }
 
-export async function getDashboardData(): Promise<DashboardData> {
-  const token = localStorage.getItem("token");
+function getToken(): string {
+  return localStorage.getItem("token") ?? "";
+}
 
-  if (!token) {
-    throw new Error("Authentication token not found");
+export async function getDashboardData(): Promise<DashboardData> {
+  const response = await fetch(
+    `${API_BASE_URL}/dashboard`,
+    {
+      headers: {
+        Authorization: `Bearer ${getToken()}`,
+        "Content-Type": "application/json",
+      },
+    },
+  );
+
+  let result: DashboardResponse;
+
+  try {
+    result =
+      (await response.json()) as DashboardResponse;
+  } catch {
+    throw new Error(
+      "Failed to parse dashboard response.",
+    );
   }
 
-  const response = await fetch(`${API_BASE_URL}/dashboard`, {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-  });
-
-  const result: DashboardResponse = await response.json();
-
-  if (!response.ok || !result.success) {
+  if (!response.ok || result.success !== true) {
     throw new Error(
-      result.message || "Failed to fetch dashboard data"
+      result.message ??
+        "Failed to fetch dashboard data",
     );
   }
 
