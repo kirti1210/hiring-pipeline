@@ -14,11 +14,16 @@ const app = express();
 
 const PORT = Number(process.env.PORT) || 5000;
 
+const clientUrl = process.env.CLIENT_URL?.trim();
+
 const allowedOrigins = [
   "http://localhost:5173",
   "http://127.0.0.1:5173",
-  process.env.CLIENT_URL,
+  clientUrl,
+  "https://hiring-pipeline-frontend.onrender.com",
 ].filter((origin): origin is string => Boolean(origin));
+
+console.log("Allowed CORS origins:", allowedOrigins);
 
 /* =========================
    MIDDLEWARE
@@ -39,6 +44,7 @@ app.use(
         return;
       }
 
+      console.error(`CORS blocked origin: ${origin}`);
       callback(new Error("Not allowed by CORS"));
     },
     credentials: true,
